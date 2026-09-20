@@ -13,6 +13,8 @@ final class OnboardingFlowController {
     private var overlayView: OnboardingDimmerView?
     private var stepSubscription: AnyCancellable?
     private var escapeMonitor: Any?
+    private var localMouseMonitor: Any?
+    private var globalMouseMonitor: Any?
     private var isStopping = false
 
     init(model: SOPModel, onFinish: @escaping (Bool) -> Void) {
@@ -33,6 +35,7 @@ final class OnboardingFlowController {
         }
         ensureOverlay(on: screen)
         installEscapeMonitor()
+        installMouseMonitors()
         render()
     }
 
@@ -43,6 +46,7 @@ final class OnboardingFlowController {
         if screenChanged {
             removeOverlay()
             ensureOverlay(on: screen)
+            installMouseMonitors()
         } else {
             overlayPanel?.setFrame(screen.frame, display: false)
         }
@@ -61,6 +65,7 @@ final class OnboardingFlowController {
         guard !isStopping else { return }
         isStopping = true
         removeEscapeMonitor()
+        removeMouseMonitors()
         stepSubscription?.cancel()
         stepSubscription = nil
         removeOverlay()
@@ -85,8 +90,9 @@ final class OnboardingFlowController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = true
-        // Let clicks reach the real orb / app windows underneath.
-        panel.ignoresMouseEvents = true
+        // Block the dimmed desktop by default; cutouts toggle click-through below.
+        panel.ignoresMouseEvents = false
+        panel.acceptsMouseMovedEvents = true
         panel.appearance = NSAppearance(named: .darkAqua)
 
         let view = OnboardingDimmerView(frame: NSRect(origin: .zero, size: screen.frame.size))
@@ -99,6 +105,7 @@ final class OnboardingFlowController {
     }
 
     private func removeOverlay() {
+        overlayPanel?.ignoresMouseEvents = false
         overlayPanel?.orderOut(nil)
         overlayPanel = nil
         overlayView = nil
@@ -119,6 +126,47 @@ final class OnboardingFlowController {
         if let escapeMonitor {
             NSEvent.removeMonitor(escapeMonitor)
             self.escapeMonitor = nil
+        }
+    }
+
+    private func installMouseMonitors() {
+        removeMouseMonitors()
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown, .rightMouseDown]
+        ) { [weak self] event in
+            self?.syncClickThrough()
+            return event
+        }
+        // When the cursor is over a cutout we set ignoresMouseEvents=true, so local
+        // monitors stop seeing moves there — keep a global monitor to flip blocking back on.
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged]
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.syncClickThrough()
+            }
+        }
+    }
+
+    private func removeMouseMonitors() {
+        if let localMouseMonitor {
+            NSEvent.removeMonitor(localMouseMonitor)
+            self.localMouseMonitor = nil
+        }
+        if let globalMouseMonitor {
+            NSEvent.removeMonitor(globalMouseMonitor)
+            self.globalMouseMonitor = nil
+        }
+    }
+
+    private func syncClickThrough() {
+        guard let overlayPanel, let overlayView, overlayPanel.isVisible else { return }
+        let passThrough = overlayView.shouldPassThrough(
+            screenPoint: NSEvent.mouseLocation,
+            in: overlayPanel
+        )
+        if overlayPanel.ignoresMouseEvents != passThrough {
+            overlayPanel.ignoresMouseEvents = passThrough
         }
     }
 
@@ -146,8 +194,15 @@ final class OnboardingFlowController {
         switch step {
         case .openOrb, .startCapture, .stopCapture:
             focus = .orb(localRect(for: orbFrame))
-        case .pickModel, .deleteScreenshot, .generate, .exportMarkdown, .finished:
+        case .pickModel, .finished:
             focus = .none
+        case .deleteScreenshot, .generate, .exportMarkdown:
+            // Spotlight the real preview/result window so it isn't buried under the dimmer.
+            if let frame = mainWindowFrame() {
+                focus = .window(localRect(for: frame))
+            } else {
+                focus = .none
+            }
         }
 
         overlayView.configure(
@@ -157,6 +212,13 @@ final class OnboardingFlowController {
             calloutAnchor: focusAnchor(for: step)
         )
         overlayView.needsDisplay = true
+        syncClickThrough()
+    }
+
+    private func mainWindowFrame() -> NSRect? {
+        NSApp.windows.first(where: {
+            $0.title == "SOPShot" && !($0 is NSPanel) && $0.isVisible
+        })?.frame
     }
 
     private func focusAnchor(for step: GuidedTourStep) -> NSRect? {
@@ -179,8 +241,8 @@ final class OnboardingFlowController {
             )
             return localRect(for: menuFrame)
         case .deleteScreenshot, .generate, .exportMarkdown, .finished:
-            if let window = NSApp.windows.first(where: { $0.title == "SOPShot" && !($0 is NSPanel) && $0.isVisible }) {
-                return localRect(for: window.frame)
+            if let frame = mainWindowFrame() {
+                return localRect(for: frame)
             }
             return screen.map { localRect(for: $0.visibleFrame) }
         }
@@ -206,6 +268,7 @@ private final class OnboardingDimmerView: NSView {
     enum Focus {
         case none
         case orb(NSRect)
+        case window(NSRect)
     }
 
     private var focus: Focus = .none
@@ -221,12 +284,44 @@ private final class OnboardingDimmerView: NSView {
         needsDisplay = true
     }
 
+    /// Pass clicks only through the spotlight hole; keep the dimmer and coach card blocking.
+    func shouldPassThrough(screenPoint: NSPoint, in window: NSWindow) -> Bool {
+        let windowPoint = window.convertPoint(fromScreen: screenPoint)
+        let point = convert(windowPoint, from: nil)
+        if currentInstructionRect().contains(point) {
+            return false
+        }
+        switch focus {
+        case .none:
+            return false
+        case .orb(let rect):
+            return pointInOval(point, rect.insetBy(dx: -10, dy: -10))
+        case .window(let rect):
+            return rect.insetBy(dx: -4, dy: -4).contains(point)
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Swallow clicks on the dimmer / coach card.
+    }
+
+    override func rightMouseDown(with event: NSEvent) {}
+
+    override func otherMouseDown(with event: NSEvent) {}
+
+    override func scrollWheel(with event: NSEvent) {}
+
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.withAlphaComponent(0.58).setFill()
         bounds.fill()
 
-        if case .orb(let rect) = focus {
+        switch focus {
+        case .none:
+            break
+        case .orb(let rect):
             drawOrbCutout(rect)
+        case .window(let rect):
+            drawWindowCutout(rect)
         }
 
         drawInstruction()
@@ -246,20 +341,36 @@ private final class OnboardingDimmerView: NSView {
         ring.stroke()
     }
 
+    private func drawWindowCutout(_ rect: NSRect) {
+        let spotlight = rect.insetBy(dx: -4, dy: -4)
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        context.setBlendMode(.clear)
+        NSBezierPath(roundedRect: spotlight, xRadius: 12, yRadius: 12).fill()
+        context.restoreGState()
+
+        NSColor.systemOrange.setStroke()
+        let ring = NSBezierPath(roundedRect: spotlight, xRadius: 12, yRadius: 12)
+        ring.lineWidth = 2
+        ring.stroke()
+    }
+
+    private func pointInOval(_ point: NSPoint, _ rect: NSRect) -> Bool {
+        let radiusX = rect.width / 2
+        let radiusY = rect.height / 2
+        guard radiusX > 0, radiusY > 0 else { return false }
+        let dx = (point.x - rect.midX) / radiusX
+        let dy = (point.y - rect.midY) / radiusY
+        return dx * dx + dy * dy <= 1
+    }
+
     private func drawInstruction() {
-        let width = instructionWidth()
+        let rect = currentInstructionRect()
         let messageAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 13),
             .foregroundColor: NSColor.white.withAlphaComponent(0.86),
             .paragraphStyle: paragraphStyle(lineSpacing: 3)
         ]
-        let messageHeight = (message as NSString).boundingRect(
-            with: NSSize(width: width - 40, height: 220),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: messageAttributes
-        ).height
-        let height = max(118, ceil(messageHeight) + 68)
-        let rect = instructionRect(width: width, height: height)
 
         NSColor(calibratedWhite: 0.11, alpha: 0.98).setFill()
         NSBezierPath(roundedRect: rect, xRadius: 10, yRadius: 10).fill()
@@ -291,6 +402,22 @@ private final class OnboardingDimmerView: NSView {
         )
     }
 
+    private func currentInstructionRect() -> NSRect {
+        let width = instructionWidth()
+        let messageAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.86),
+            .paragraphStyle: paragraphStyle(lineSpacing: 3)
+        ]
+        let messageHeight = (message as NSString).boundingRect(
+            with: NSSize(width: width - 40, height: 220),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: messageAttributes
+        ).height
+        let height = max(118, ceil(messageHeight) + 68)
+        return instructionRect(width: width, height: height)
+    }
+
     private func instructionRect(width: CGFloat, height: CGFloat) -> NSRect {
         let inset: CGFloat = 28
         let gap: CGFloat = 22
@@ -298,8 +425,12 @@ private final class OnboardingDimmerView: NSView {
         let maxY = bounds.maxY - inset
 
         let preferredTarget = calloutAnchor ?? {
-            if case .orb(let target) = focus { return target }
-            return nil
+            switch focus {
+            case .orb(let target), .window(let target):
+                return target
+            case .none:
+                return nil
+            }
         }()
 
         guard let target = preferredTarget else {

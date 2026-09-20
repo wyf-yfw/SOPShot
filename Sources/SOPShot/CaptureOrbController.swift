@@ -532,6 +532,8 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
                             mainWindow.makeKeyAndOrderFront(nil)
                             self?.isRestoring = false
                             self?.savedScreen = nil
+                            // Re-cut the coach spotlight now that the preview window is final.
+                            self?.onboardingFlow?.refresh()
                         }
                     })
                 }
