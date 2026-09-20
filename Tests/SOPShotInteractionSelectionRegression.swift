@@ -50,48 +50,67 @@ struct SOPShotInteractionSelectionRegression {
         let space = KeyboardEventPolicy.classify(keyCode: 49)
         precondition(space.kind == .keyAction)
         precondition(space.keyLabel == "空格")
-        precondition(space.kind.triggersScreenshot)
+        precondition(ScreenshotTriggerPolicy.default.producesScreenshot(for: space.kind))
+        precondition(ScreenshotTriggerPolicy.default.shouldCaptureImmediately(space.kind))
 
         let returnKey = KeyboardEventPolicy.classify(keyCode: 36)
         precondition(returnKey.kind == .confirm)
         precondition(returnKey.keyLabel == "回车")
-        precondition(returnKey.kind.triggersScreenshot)
+        precondition(ScreenshotTriggerPolicy.default.producesScreenshot(for: returnKey.kind))
 
         let pageDown = KeyboardEventPolicy.classify(keyCode: 121)
         precondition(pageDown.kind == .navigation)
         precondition(pageDown.keyLabel == "Page Down")
-        precondition(pageDown.kind.triggersScreenshot)
+        precondition(ScreenshotTriggerPolicy.default.producesScreenshot(for: pageDown.kind))
 
         let ordinaryLetter = KeyboardEventPolicy.classify(keyCode: 0)
         precondition(ordinaryLetter.kind == .typing)
-        precondition(!ordinaryLetter.kind.triggersScreenshot)
+        precondition(!ScreenshotTriggerPolicy.default.producesScreenshot(for: ordinaryLetter.kind))
         precondition(ordinaryLetter.keyLabel == nil)
 
         let modifiedLetter = KeyboardEventPolicy.classify(keyCode: 0, hasCommand: true)
         precondition(modifiedLetter.kind == .shortcut)
-        precondition(modifiedLetter.kind.triggersScreenshot)
+        precondition(ScreenshotTriggerPolicy.default.producesScreenshot(for: modifiedLetter.kind))
 
         let scroll = InputTimelineEvent(timestamp: 5.00, kind: .scroll, location: CGPoint(x: 0.5, y: 0.5))
         let drag = InputTimelineEvent(timestamp: 5.50, kind: .drag, location: CGPoint(x: 0.4, y: 0.4))
         let typing = InputTimelineEvent(timestamp: 6.00, kind: .typing, location: nil)
 
-        precondition(scroll.kind.coalescesScreenshot)
-        precondition(drag.kind.coalescesScreenshot)
-        precondition(!typing.kind.coalescesScreenshot)
-        precondition(!typing.kind.producesScreenshot)
+        let policy = ScreenshotTriggerPolicy.default
+        precondition(policy.shouldCoalesce(scroll.kind))
+        precondition(policy.shouldCoalesce(drag.kind))
+        precondition(!policy.shouldCoalesce(typing.kind))
+        precondition(!policy.producesScreenshot(for: typing.kind))
 
-        precondition(scroll.kind.producesScreenshot)
-        precondition(drag.kind.producesScreenshot)
-        precondition(!scroll.kind.triggersScreenshot)
-        precondition(!drag.kind.triggersScreenshot)
+        precondition(policy.producesScreenshot(for: scroll.kind))
+        precondition(policy.producesScreenshot(for: drag.kind))
+        precondition(!policy.shouldCaptureImmediately(scroll.kind))
+        precondition(!policy.shouldCaptureImmediately(drag.kind))
+
+        var disabledScroll = ScreenshotTriggerPolicy.default
+        disabledScroll.setEnabled(.scroll, false)
+        precondition(!disabledScroll.producesScreenshot(for: .scroll))
+        precondition(!disabledScroll.shouldCoalesce(.scroll))
+        precondition(disabledScroll.hasAnyTriggerEnabled)
+
+        var allOff = ScreenshotTriggerPolicy(
+            click: false,
+            drag: false,
+            scroll: false,
+            confirm: false,
+            keyAction: false,
+            navigation: false,
+            shortcut: false
+        )
+        precondition(!allOff.hasAnyTriggerEnabled)
 
         precondition(scroll.kind.screenshotSettleDelay >= drag.kind.screenshotSettleDelay)
         precondition(scroll.kind.screenshotSettleDelay > 0)
         precondition(drag.kind.screenshotSettleDelay > 0)
 
         let clickKind = InputTimelineEvent(timestamp: 7.00, kind: .click, location: nil).kind
-        precondition(clickKind.triggersScreenshot)
-        precondition(!clickKind.coalescesScreenshot)
+        precondition(policy.shouldCaptureImmediately(clickKind))
+        precondition(!policy.shouldCoalesce(clickKind))
         precondition(clickKind.screenshotSettleDelay == 0)
 
         print("SOPShot interaction selection regression: PASS")

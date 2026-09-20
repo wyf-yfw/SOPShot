@@ -2,7 +2,7 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-enum InputEventKind: Equatable {
+enum InputEventKind: String, Equatable, CaseIterable, Identifiable, Codable {
     case click
     case drag
     case scroll
@@ -11,6 +11,8 @@ enum InputEventKind: Equatable {
     case keyAction
     case navigation
     case shortcut
+
+    var id: String { rawValue }
 
     var priority: Int {
         switch self {
@@ -34,29 +36,27 @@ enum InputEventKind: Equatable {
         }
     }
 
-    var triggersScreenshot: Bool {
+    var settingsDetail: String {
         switch self {
-        case .click, .confirm, .keyAction, .navigation, .shortcut:
-            return true
-        case .drag, .scroll, .typing:
-            return false
+        case .click: return "左键、右键和其他鼠标按下"
+        case .drag: return "拖拽结束后截一张"
+        case .scroll: return "滚动停住后截一张"
+        case .typing: return "普通字母和数字（始终不截图）"
+        case .confirm: return "回车"
+        case .keyAction: return "空格、Tab、Esc、删除、功能键等"
+        case .navigation: return "方向键、Home、End、翻页"
+        case .shortcut: return "带 ⌘ / ⌃ / ⌥ 的组合键"
         }
     }
 
-    /// Drag and scroll fire continuously, so they only produce a screenshot
-    /// after the gesture settles instead of on every incoming event.
-    var coalescesScreenshot: Bool {
+    /// Drag and scroll fire continuously; when enabled they share one trailing screenshot.
+    var isGestureKind: Bool {
         switch self {
         case .drag, .scroll:
             return true
-        case .click, .confirm, .keyAction, .navigation, .shortcut, .typing:
+        case .click, .typing, .confirm, .keyAction, .navigation, .shortcut:
             return false
         }
-    }
-
-    /// Whether this kind is expected to contribute at least one screenshot.
-    var producesScreenshot: Bool {
-        triggersScreenshot || coalescesScreenshot
     }
 
     /// How long the gesture must stay quiet before the trailing screenshot fires.
@@ -66,6 +66,76 @@ enum InputEventKind: Equatable {
         case .drag: return 0.30
         default: return 0
         }
+    }
+
+    /// Kinds the user can turn on or off in settings.
+    static var configurableScreenshotTriggers: [InputEventKind] {
+        [.click, .drag, .scroll, .confirm, .keyAction, .navigation, .shortcut]
+    }
+}
+
+/// Which interaction kinds may produce a screenshot during capture.
+struct ScreenshotTriggerPolicy: Equatable, Codable {
+    var click = true
+    var drag = true
+    var scroll = true
+    var confirm = true
+    var keyAction = true
+    var navigation = true
+    var shortcut = true
+
+    static let `default` = ScreenshotTriggerPolicy()
+
+    func isEnabled(_ kind: InputEventKind) -> Bool {
+        switch kind {
+        case .click: return click
+        case .drag: return drag
+        case .scroll: return scroll
+        case .confirm: return confirm
+        case .keyAction: return keyAction
+        case .navigation: return navigation
+        case .shortcut: return shortcut
+        case .typing: return false
+        }
+    }
+
+    mutating func setEnabled(_ kind: InputEventKind, _ enabled: Bool) {
+        switch kind {
+        case .click: click = enabled
+        case .drag: drag = enabled
+        case .scroll: scroll = enabled
+        case .confirm: confirm = enabled
+        case .keyAction: keyAction = enabled
+        case .navigation: navigation = enabled
+        case .shortcut: shortcut = enabled
+        case .typing: break
+        }
+    }
+
+    func shouldCaptureImmediately(_ kind: InputEventKind) -> Bool {
+        isEnabled(kind) && !kind.isGestureKind
+    }
+
+    func shouldCoalesce(_ kind: InputEventKind) -> Bool {
+        isEnabled(kind) && kind.isGestureKind
+    }
+
+    func producesScreenshot(for kind: InputEventKind) -> Bool {
+        isEnabled(kind)
+    }
+
+    var enabledSummary: String {
+        let labels = InputEventKind.configurableScreenshotTriggers
+            .filter(isEnabled)
+            .map(\.promptLabel)
+        if labels.isEmpty {
+            return "当前没有启用任何截图触发"
+        }
+        return labels.joined(separator: "、")
+    }
+
+    var hasAnyTriggerEnabled: Bool {
+        InputEventKind.configurableScreenshotTriggers.contains(where: isEnabled)
     }
 }
 
@@ -215,6 +285,7 @@ struct InputTimelineEvent: Identifiable, Equatable {
 /// Records only interaction metadata. Printable keyboard characters and clipboard data never leave this module.
 final class InteractionRecorder {
     var onCaptureEvent: ((InputTimelineEvent) -> Void)?
+    var triggerPolicy: ScreenshotTriggerPolicy = .default
 
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
@@ -356,7 +427,7 @@ final class InteractionRecorder {
             keyLabel: classification.keyLabel
         )
         events.append(next)
-        let shouldCapture = kind.triggersScreenshot || kind.coalescesScreenshot
+        let shouldCapture = triggerPolicy.producesScreenshot(for: kind)
         let captureHandler = shouldCapture ? onCaptureEvent : nil
         lock.unlock()
 

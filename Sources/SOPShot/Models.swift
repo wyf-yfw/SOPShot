@@ -58,6 +58,7 @@ enum DebugDestination: String, CaseIterable, Identifiable {
     case result
     case editor
     case modelSettings
+    case captureSettings
 
     var id: String { rawValue }
 
@@ -72,6 +73,7 @@ enum DebugDestination: String, CaseIterable, Identifiable {
         case .result: return "最终预览"
         case .editor: return "编辑工作台"
         case .modelSettings: return "模型设置"
+        case .captureSettings: return "截图设置"
         }
     }
 
@@ -86,6 +88,7 @@ enum DebugDestination: String, CaseIterable, Identifiable {
         case .result: return "报销单演示说明"
         case .editor: return "在演示说明上进入编辑"
         case .modelSettings: return "弹出模型设置表单"
+        case .captureSettings: return "弹出截图触发设置"
         }
     }
 
@@ -93,7 +96,7 @@ enum DebugDestination: String, CaseIterable, Identifiable {
         switch self {
         case .preparing, .recording, .extracting, .processing, .preview:
             return true
-        case .emptyStart, .result, .editor, .modelSettings:
+        case .emptyStart, .result, .editor, .modelSettings, .captureSettings:
             return false
         }
     }
@@ -185,8 +188,10 @@ final class SOPModel: ObservableObject {
     @Published var isAPIKeyLoading = false
     @Published var modelTestState: ModelTestState = .idle
     @Published var isModelSettingsPresented = false
+    @Published var isCaptureSettingsPresented = false
     @Published var isDebugAssistantPresented = false
-    /// When true, capture UI is a debug preview and must not hide the window or install the live status item.
+    @Published var isHelpPresented = false
+    /// When true, capture UI is a debug preview and must not hide the window or show the capture orb.
     @Published var isDebugSession = false
     @Published var pendingConfirmation: PendingConfirmation?
     @Published var configuredModelOptions: [ConfiguredModelOption] = []
@@ -197,11 +202,17 @@ final class SOPModel: ObservableObject {
     @Published var previewInputMonitoringAvailable = false
     @Published var inputMonitoringAvailable = false
     @Published var isInputMonitoringPermissionAlertPresented = false
+    @Published var screenshotTriggers: ScreenshotTriggerPolicy
+
+    var prefersOrbShell: Bool {
+        phase == .idle && steps.isEmpty && !isEditing && !isDebugSession
+    }
 
     private let screenshotSession = ClickScreenshotSession()
     private let interactionRecorder = InteractionRecorder()
     private let apiKeyStore = APIKeyStore()
     private var recordingConfiguration: ModelAPIConfiguration?
+    private var recordingTriggerPolicy: ScreenshotTriggerPolicy = .default
     private var pendingInputEvents: [InputTimelineEvent] = []
     private var pendingConfiguration: ModelAPIConfiguration?
     private var recordingInputMonitoringAvailable = false
@@ -227,6 +238,7 @@ final class SOPModel: ObservableObject {
         modelProvider = storedProvider
         modelInputMode = initialInputMode
         modelName = initialModel
+        screenshotTriggers = Self.loadScreenshotTriggers()
         let providerEndpointKey = "sopshot.model.\(storedProvider.rawValue).endpoint"
         modelEndpoint = UserDefaults.standard.string(forKey: providerEndpointKey)
             ?? (storedProvider == .customOpenAICompatible
@@ -445,6 +457,11 @@ final class SOPModel: ObservableObject {
         modelTestState = .idle
     }
 
+    func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: "sopshot.onboarding.completed")
+        isHelpPresented = false
+    }
+
     func selectModelInputMode(_ mode: ModelInputMode) {
         guard modelProvider.supportedInputModes.contains(mode) else { return }
         modelInputMode = mode
@@ -499,6 +516,38 @@ final class SOPModel: ObservableObject {
         }
     }
 
+    func saveCaptureSettings() {
+        guard screenshotTriggers.hasAnyTriggerEnabled else {
+            banner = SOPBanner(text: "请至少打开一种截图触发操作。", tone: .warning)
+            return
+        }
+        Self.persistScreenshotTriggers(screenshotTriggers)
+        isCaptureSettingsPresented = false
+        banner = nil
+    }
+
+    func setScreenshotTrigger(_ kind: InputEventKind, enabled: Bool) {
+        guard InputEventKind.configurableScreenshotTriggers.contains(kind) else { return }
+        var updated = screenshotTriggers
+        updated.setEnabled(kind, enabled)
+        screenshotTriggers = updated
+    }
+
+    private static let screenshotTriggersKey = "sopshot.capture.triggers"
+
+    private static func loadScreenshotTriggers() -> ScreenshotTriggerPolicy {
+        guard let data = UserDefaults.standard.data(forKey: screenshotTriggersKey),
+              let decoded = try? JSONDecoder().decode(ScreenshotTriggerPolicy.self, from: data) else {
+            return .default
+        }
+        return decoded
+    }
+
+    private static func persistScreenshotTriggers(_ policy: ScreenshotTriggerPolicy) {
+        guard let data = try? JSONEncoder().encode(policy) else { return }
+        UserDefaults.standard.set(data, forKey: screenshotTriggersKey)
+    }
+
     func testModelAPI() {
         guard phase == .idle else { return }
         modelTestState = .testing
@@ -532,6 +581,11 @@ final class SOPModel: ObservableObject {
             banner = SOPBanner(text: "开始前请先在“模型设置”中选择图像模型并填写 API Key。", tone: .warning)
             return
         }
+        guard screenshotTriggers.hasAnyTriggerEnabled else {
+            isCaptureSettingsPresented = true
+            banner = SOPBanner(text: "请先在“截图设置”里至少打开一种截图触发操作。", tone: .warning)
+            return
+        }
         isDebugSession = false
         title = ""
         audience = ""
@@ -543,13 +597,17 @@ final class SOPModel: ObservableObject {
         clearPendingCapture()
         queuedScreenshotCount = 0
         let configuration = modelConfiguration
+        let triggerPolicy = screenshotTriggers
         recordingConfiguration = configuration
+        recordingTriggerPolicy = triggerPolicy
         phase = .preparing
         banner = SOPBanner(text: "正在准备截图。完成后会先预览，再发送给 \(configuration.displayName)。", tone: .info)
 
         Task { [weak self] in
             guard let self else { return }
             do {
+                screenshotSession.triggerPolicy = triggerPolicy
+                interactionRecorder.triggerPolicy = triggerPolicy
                 screenshotSession.onQueuedCountChanged = { [weak self] count in
                     self?.queuedScreenshotCount = count
                 }
@@ -567,7 +625,7 @@ final class SOPModel: ObservableObject {
                 recordingStartedAt = Date()
                 banner = SOPBanner(
                     text: hasInputPermission
-                        ? "正在按操作截图。鼠标点击、拖拽、滚动和关键按键都会保存一张画面，完成后点击“结束截图”。"
+                        ? "正在按操作截图。已启用：\(triggerPolicy.enabledSummary)。完成后点击左上角圆球结束。"
                         : "正在等待截图。当前未开启输入监控，无法识别鼠标和键盘操作；请先打开权限。",
                     tone: hasInputPermission ? .info : .warning
                 )
@@ -602,7 +660,9 @@ final class SOPModel: ObservableObject {
                 let frames = await screenshotSession.finish()
                 screenshotSession.onQueuedCountChanged = nil
                 queuedScreenshotCount = frames.count
-                let captureEventCount = inputEvents.filter(\.kind.producesScreenshot).count
+                let captureEventCount = inputEvents.filter {
+                    self.recordingTriggerPolicy.producesScreenshot(for: $0.kind)
+                }.count
                 guard captureEventCount > 0 else { throw CaptureError.emptyCapture }
                 guard !frames.isEmpty else {
                     throw CaptureError.screenshotFailed(expected: captureEventCount, captured: 0)
@@ -627,7 +687,11 @@ final class SOPModel: ObservableObject {
                 phase = .idle
                 recordingStartedAt = nil
                 recordingConfiguration = nil
-                banner = SOPBanner(text: error.localizedDescription, tone: .error)
+                if let captureError = error as? CaptureError, case .emptyCapture = captureError {
+                    banner = nil
+                } else {
+                    banner = SOPBanner(text: error.localizedDescription, tone: .error)
+                }
             }
         }
     }
@@ -662,7 +726,8 @@ final class SOPModel: ObservableObject {
                     frames: sampledFrames,
                     configuration: currentConfiguration,
                     inputEvents: inputEvents,
-                    userNote: userNote
+                    userNote: userNote,
+                    triggerPolicy: recordingTriggerPolicy
                 )
                 let frames = sampledFrames
                 let capturedSteps = try makeSteps(from: draft, frames: frames)
@@ -782,7 +847,7 @@ final class SOPModel: ObservableObject {
            let eventIndex = pendingInputEvents.firstIndex(where: { $0.id == primaryInputEventID }) {
             pendingInputEvents.remove(at: eventIndex)
         } else if let eventIndex = pendingInputEvents.indices
-            .filter({ pendingInputEvents[$0].kind.producesScreenshot })
+            .filter({ recordingTriggerPolicy.producesScreenshot(for: pendingInputEvents[$0].kind) })
             .min(by: {
                 abs(pendingInputEvents[$0].timestamp - deletedFrame.timestamp)
                     < abs(pendingInputEvents[$1].timestamp - deletedFrame.timestamp)
@@ -826,7 +891,7 @@ final class SOPModel: ObservableObject {
         timestamp: TimeInterval
     ) -> [InputTimelineEvent] {
         guard let primaryCaptureIndex = events.indices
-            .filter({ events[$0].kind.producesScreenshot })
+            .filter({ recordingTriggerPolicy.producesScreenshot(for: events[$0].kind) })
             .min(by: { lhs, rhs in
                 let leftDistance = abs(events[lhs].timestamp - timestamp)
                 let rightDistance = abs(events[rhs].timestamp - timestamp)
@@ -891,6 +956,8 @@ final class SOPModel: ObservableObject {
         isDebugSession = destination.keepsDebugSession
         isDebugAssistantPresented = false
         isModelSettingsPresented = false
+        isCaptureSettingsPresented = false
+        isHelpPresented = false
         isEditing = false
         banner = nil
 
@@ -946,6 +1013,13 @@ final class SOPModel: ObservableObject {
                 clearDraftSilently()
             }
             isModelSettingsPresented = true
+
+        case .captureSettings:
+            phase = .idle
+            if steps.isEmpty {
+                clearDraftSilently()
+            }
+            isCaptureSettingsPresented = true
         }
     }
 

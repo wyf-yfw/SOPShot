@@ -21,6 +21,7 @@ final class ClickScreenshotSession {
 
     /// Fires whenever the number of queued screenshots changes during a session.
     var onQueuedCountChanged: ((Int) -> Void)?
+    var triggerPolicy: ScreenshotTriggerPolicy = .default
 
     var queuedScreenshotCount: Int {
         pendingCaptures.count + pendingGestures.count
@@ -96,12 +97,12 @@ final class ClickScreenshotSession {
             return
         }
 
-        if event.kind.coalescesScreenshot {
+        if triggerPolicy.shouldCoalesce(event.kind) {
             scheduleCoalescedCapture(event)
             return
         }
 
-        guard event.kind.triggersScreenshot else { return }
+        guard triggerPolicy.shouldCaptureImmediately(event.kind) else { return }
         appendCapture(event, delay: postInputDelayNanoseconds)
     }
 

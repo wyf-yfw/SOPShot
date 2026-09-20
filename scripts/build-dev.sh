@@ -18,9 +18,18 @@ if ! /usr/bin/security find-certificate -Z "$HOME/Library/Keychains/login.keycha
   exit 1
 fi
 
+GIT_BRANCH="$(cd "$PROJECT_DIR" && /usr/bin/git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+SWIFT_BUILD_FLAGS=()
+if [[ "${SOPSHOT_DEBUG_ASSISTANT:-}" == "1" || "$GIT_BRANCH" == "release" || "$GIT_BRANCH" == release/* ]]; then
+  SWIFT_BUILD_FLAGS+=(-Xswiftc -DSOPSHOT_DEBUG_ASSISTANT)
+  print "调试助手：开启（分支 $GIT_BRANCH）"
+else
+  print "调试助手：关闭（分支 ${GIT_BRANCH:-unknown}）"
+fi
+
 print "构建 SOPShot（$BUILD_CONFIGURATION）..."
-(cd "$PROJECT_DIR" && /usr/bin/swift build -c "$BUILD_CONFIGURATION")
-BIN_DIR="$(cd "$PROJECT_DIR" && /usr/bin/swift build -c "$BUILD_CONFIGURATION" --show-bin-path)"
+(cd "$PROJECT_DIR" && /usr/bin/swift build -c "$BUILD_CONFIGURATION" "${SWIFT_BUILD_FLAGS[@]}")
+BIN_DIR="$(cd "$PROJECT_DIR" && /usr/bin/swift build -c "$BUILD_CONFIGURATION" "${SWIFT_BUILD_FLAGS[@]}" --show-bin-path)"
 
 /bin/mkdir -p "$APP_PATH/Contents/MacOS"
 /bin/mkdir -p "$APP_PATH/Contents/Resources"

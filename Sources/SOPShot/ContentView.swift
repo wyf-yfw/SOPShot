@@ -14,7 +14,6 @@ extension Color {
 struct ContentView: View {
     @EnvironmentObject private var model: SOPModel
     @AppStorage("sopshot.onboarding.completed") private var onboardingCompleted = false
-    @State private var isOnboardingPresented = false
 
     var body: some View {
         Group {
@@ -23,7 +22,10 @@ struct ContentView: View {
             } else if model.phase != .idle {
                 CaptureView()
             } else if model.steps.isEmpty {
-                EmptyStartView()
+                // Idle shell is the floating orb; keep a minimal host for sheets/alerts.
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(WindowSizeView(targetContentSize: NSSize(width: 400, height: 210)))
             } else if model.isEditing {
                 EditorWorkspaceView()
             } else {
@@ -39,47 +41,70 @@ struct ContentView: View {
         }
         .onAppear {
             if !onboardingCompleted {
-                isOnboardingPresented = true
+                model.isHelpPresented = true
             }
         }
         .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    model.isDebugAssistantPresented = true
-                } label: {
-                    Label("调试助手", systemImage: "hammer")
+            if !model.steps.isEmpty || model.phase != .idle || model.isDebugSession {
+                if FeatureFlags.showsDebugAssistant {
+                    ToolbarItem(placement: .automatic) {
+                        Button {
+                            model.isDebugAssistantPresented = true
+                        } label: {
+                            Image(systemName: "hammer")
+                        }
+                        .help("跳转到任意页面，不必走完整流程")
+                        .accessibilityLabel("调试助手")
+                    }
                 }
-                .help("跳转到任意页面，不必走完整流程")
-            }
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    model.isModelSettingsPresented = true
-                } label: {
-                    Label("模型设置", systemImage: "slider.horizontal.3")
+                ToolbarItem(placement: .automatic) {
+                    Menu {
+                        Button("截图设置…") {
+                            model.isCaptureSettingsPresented = true
+                        }
+                        .disabled(model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        Button("模型设置…") {
+                            model.isModelSettingsPresented = true
+                        }
+                        .disabled(model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        Divider()
+                        Button("使用说明…") {
+                            model.isHelpPresented = true
+                        }
+                        .disabled(model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .help("截图触发、模型配置与使用说明")
+                    .accessibilityLabel("设置")
                 }
-                .help("配置你自己的多模态模型 API")
-                .disabled(model.phase != .idle && model.phase != .preview && !model.isDebugSession)
-            }
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    isOnboardingPresented = true
-                } label: {
-                    Image(systemName: "questionmark.circle")
-                }
-                .help("查看使用说明")
-                .accessibilityLabel("使用说明")
-                .disabled(model.phase != .idle && model.phase != .preview && !model.isDebugSession)
             }
         }
-        .sheet(isPresented: $model.isModelSettingsPresented) {
+        .sheet(isPresented: Binding(
+            get: { model.isModelSettingsPresented && !model.prefersOrbShell },
+            set: { model.isModelSettingsPresented = $0 }
+        )) {
             ModelSettingsView()
                 .environmentObject(model)
         }
-        .sheet(isPresented: $model.isDebugAssistantPresented) {
+        .sheet(isPresented: Binding(
+            get: { model.isCaptureSettingsPresented && !model.prefersOrbShell },
+            set: { model.isCaptureSettingsPresented = $0 }
+        )) {
+            CaptureSettingsView()
+                .environmentObject(model)
+        }
+        .sheet(isPresented: Binding(
+            get: { FeatureFlags.showsDebugAssistant && model.isDebugAssistantPresented && !model.prefersOrbShell },
+            set: { model.isDebugAssistantPresented = $0 }
+        )) {
             DebugAssistantView()
                 .environmentObject(model)
         }
-        .sheet(isPresented: $isOnboardingPresented) {
+        .sheet(isPresented: Binding(
+            get: { model.isHelpPresented && !model.prefersOrbShell },
+            set: { model.isHelpPresented = $0 }
+        )) {
             OnboardingView(
                 onLoadDemo: {
                     finishOnboarding()
@@ -120,8 +145,7 @@ struct ContentView: View {
     }
 
     private func finishOnboarding() {
-        onboardingCompleted = true
-        isOnboardingPresented = false
+        model.completeOnboarding()
     }
 }
 
@@ -131,7 +155,7 @@ struct DebugAssistantView: View {
     private let destinations: [(String, [DebugDestination])] = [
         ("开始与截图", [.emptyStart, .preparing, .recording, .extracting]),
         ("预览与结果", [.preview, .processing, .result, .editor]),
-        ("设置", [.modelSettings])
+        ("设置", [.modelSettings, .captureSettings])
     ]
 
     var body: some View {
@@ -311,7 +335,7 @@ struct ModelSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("只显示支持图像输入的模型。结束截图后会先预览画面，确认后才会发送。")
                 Text("测试会发送一张内置演示画面。API Key 保存在本机应用配置中，不写入苹果钥匙串。")
-            Text(isCustomProvider ? "接口地址和模型选择会保存在本机。" : "预制厂商的接口地址已内置，模型选择会保存在本机。")
+                Text(isCustomProvider ? "接口地址和模型选择会保存在本机。" : "预制厂商的接口地址已内置，模型选择会保存在本机。")
             }
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
@@ -344,7 +368,7 @@ struct ModelSettingsView: View {
             .padding(.top, 18)
         }
         .padding(28)
-        .frame(width: 640, height: 540)
+        .frame(width: 640, height: 480)
     }
 
     private var isTesting: Bool {
@@ -378,6 +402,65 @@ struct ModelSettingsView: View {
                 .foregroundStyle(Color.sopDanger)
                 .lineLimit(2)
         }
+    }
+}
+
+struct CaptureSettingsView: View {
+    @EnvironmentObject private var model: SOPModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("截图设置")
+                        .font(.system(size: 24, weight: .bold))
+                    Text("选择哪些操作会触发截图。普通打字始终不会截图。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            Divider()
+                .padding(.vertical, 22)
+
+            Form {
+                Section {
+                    ForEach(InputEventKind.configurableScreenshotTriggers) { kind in
+                        Toggle(
+                            isOn: Binding(
+                                get: { model.screenshotTriggers.isEnabled(kind) },
+                                set: { model.setScreenshotTrigger(kind, enabled: $0) }
+                            )
+                        ) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(kind.promptLabel)
+                                Text(kind.settingsDetail)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("触发操作")
+                } footer: {
+                    Text("关闭后对应操作不再截图。至少保留一种触发，才能开始截图。")
+                }
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                Spacer()
+                Button("保存并关闭") {
+                    model.saveCaptureSettings()
+                }
+                .buttonStyle(SOPDarkButtonStyle())
+                .disabled(!model.screenshotTriggers.hasAnyTriggerEnabled)
+            }
+            .padding(.top, 18)
+        }
+        .padding(28)
+        .frame(width: 520, height: 520)
     }
 }
 
@@ -1102,7 +1185,7 @@ struct OnboardingView: View {
                 GuideRow(
                     number: "01",
                     title: "设置图像模型",
-                    detail: "从右上角打开模型设置，填写你自己的 API Key。"
+                    detail: "点击左上角悬浮球打开菜单，在模型设置里填写你自己的 API Key。"
                 )
                 GuideRow(
                     number: "02",

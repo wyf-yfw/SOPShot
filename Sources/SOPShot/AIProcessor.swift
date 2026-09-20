@@ -316,20 +316,24 @@ enum ModelAPIClient {
         frames: [CapturedFrame],
         configuration: ModelAPIConfiguration,
         inputEvents: [InputTimelineEvent] = [],
-        userNote: String = ""
+        userNote: String = "",
+        triggerPolicy: ScreenshotTriggerPolicy = .default
     ) async throws -> AIProcedureDraft {
         guard configuration.isConfigured else { throw ModelAPIError.notConfigured }
 
         guard !frames.isEmpty else { throw ModelAPIError.invalidResponse }
         let duration = max(1, (frames.map(\.timestamp).max() ?? 0) + 0.05)
         let frameTimestamps = frames.map(\.timestamp)
-        let captureEventCount = inputEvents.filter(\.kind.producesScreenshot).count
+        let captureEventCount = inputEvents.filter {
+            triggerPolicy.producesScreenshot(for: $0.kind)
+        }.count
         let prompt = userPrompt(
             duration: duration,
             frameTimestamps: frameTimestamps,
             captureEventCount: captureEventCount,
             inputEvents: inputEvents,
-            userNote: userNote
+            userNote: userNote,
+            triggerPolicy: triggerPolicy
         )
         let responseText: String
         switch configuration.provider {
@@ -785,11 +789,12 @@ enum ModelAPIClient {
         frameTimestamps: [TimeInterval],
         captureEventCount: Int,
         inputEvents: [InputTimelineEvent] = [],
-        userNote: String = ""
+        userNote: String = "",
+        triggerPolicy: ScreenshotTriggerPolicy = .default
     ) -> String {
         let frameGuide = frameTimestamps.enumerated().map { index, timestamp in
             let eventLabel = inputEvents
-                .filter(\.kind.producesScreenshot)
+                .filter { triggerPolicy.producesScreenshot(for: $0.kind) }
                 .min(by: {
                     abs($0.timestamp - timestamp) < abs($1.timestamp - timestamp)
                 })?
