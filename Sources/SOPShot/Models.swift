@@ -225,7 +225,7 @@ enum GuidedTourStep: Int, CaseIterable, Equatable {
         case .openOrb:
             return "点击左上角悬浮球打开菜单。引导会用真实界面操作，截图和说明都来自演示数据。"
         case .pickModel:
-            return "在菜单里点「选择模型」并选一个已配置模型。若还没有模型，先打开「模型设置」保存 API Key。"
+            return "在菜单里点「选择模型」并选一个模型。若还没有配置，引导会提供一个演示模型。"
         case .startCapture:
             return "选择模型后菜单会关闭。再点悬浮球打开菜单，然后点「开始截图」进入演示采集。"
         case .stopCapture:
@@ -251,6 +251,41 @@ enum GuidedTourEvent: Equatable {
     case previewFrameDeleted
     case generateFinished
     case exported
+}
+
+/// Actions that can be gated while the guided tour is active.
+enum GuidedTourAction: Equatable {
+    case openOrbMenu
+    case selectModel
+    case openModelSettings
+    case startCapture
+    case stopCapture
+    case deletePreviewFrame
+    case startGenerate
+    case exportMarkdown
+}
+
+extension GuidedTourStep {
+    func allows(_ action: GuidedTourAction) -> Bool {
+        switch self {
+        case .openOrb:
+            return action == .openOrbMenu
+        case .pickModel:
+            return action == .openOrbMenu || action == .selectModel
+        case .startCapture:
+            return action == .openOrbMenu || action == .startCapture
+        case .stopCapture:
+            return action == .stopCapture
+        case .deleteScreenshot:
+            return action == .deletePreviewFrame
+        case .generate:
+            return action == .startGenerate
+        case .exportMarkdown:
+            return action == .exportMarkdown
+        case .finished:
+            return false
+        }
+    }
 }
 
 @MainActor
@@ -520,6 +555,7 @@ final class SOPModel: ObservableObject {
 
     func selectConfiguredModel(_ option: ConfiguredModelOption) {
         guard phase == .idle else { return }
+        guard allowsGuidedTourAction(.selectModel) else { return }
 
         modelProvider = option.provider
         modelInputMode = option.provider.defaultInputMode
@@ -565,13 +601,35 @@ final class SOPModel: ObservableObject {
 
     func completeOnboarding() {
         UserDefaults.standard.set(true, forKey: "sopshot.onboarding.completed")
-        isHelpPresented = false
-        guidedTourStep = nil
+        endGuidedTourSession()
     }
 
     func dismissOnboarding() {
-        isHelpPresented = false
+        endGuidedTourSession()
+    }
+
+    /// Clears tour UI and demo session state so the app returns to the idle orb.
+    private func endGuidedTourSession() {
+        let wasTouring = guidedTourStep != nil || isHelpPresented
         guidedTourStep = nil
+        isHelpPresented = false
+        guard wasTouring else { return }
+
+        abandonLiveCaptureIfNeeded()
+        interactionRecorder.onCaptureEvent = nil
+        screenshotSession.onQueuedCountChanged = nil
+        recordingConfiguration = nil
+        recordingStartedAt = nil
+        pendingConfirmation = nil
+        isModelSettingsPresented = false
+        isCaptureSettingsPresented = false
+        isDebugAssistantPresented = false
+        isEditing = false
+        isDebugSession = false
+        clearDraftSilently()
+        queuedScreenshotCount = 0
+        phase = .idle
+        banner = nil
     }
 
     func noteGuidedTourEvent(_ event: GuidedTourEvent) {
@@ -580,10 +638,9 @@ final class SOPModel: ObservableObject {
         switch (step, event) {
         case (.openOrb, .orbMenuOpened):
             next = .pickModel
-        case (.openOrb, .modelSelected), (.openOrb, .modelSettingsSaved),
-             (.pickModel, .modelSelected), (.pickModel, .modelSettingsSaved):
+        case (.pickModel, .modelSelected), (.pickModel, .modelSettingsSaved):
             next = .startCapture
-        case (.openOrb, .captureStarted), (.pickModel, .captureStarted), (.startCapture, .captureStarted):
+        case (.startCapture, .captureStarted):
             next = .stopCapture
         case (.stopCapture, .captureStopped):
             next = .deleteScreenshot
@@ -597,11 +654,25 @@ final class SOPModel: ObservableObject {
             next = nil
         }
         guard let next else { return }
-        guidedTourStep = next
         if next == .finished {
             completeOnboarding()
-            banner = SOPBanner(text: "引导完成。之后可以从悬浮球直接开始截图。", tone: .success)
+            return
         }
+        guidedTourStep = next
+    }
+
+    /// When a tour is active, only the current step's allowed actions may run.
+    func allowsGuidedTourAction(_ action: GuidedTourAction) -> Bool {
+        guard let step = guidedTourStep else { return true }
+        return step.allows(action)
+    }
+
+    static let guidedTourMockModelID = "guided-tour::demo-model"
+
+    /// Advances the model-pick tour step without writing real API settings.
+    func selectGuidedTourMockModel() {
+        guard allowsGuidedTourAction(.selectModel) else { return }
+        noteGuidedTourEvent(.modelSelected)
     }
 
     func selectModelInputMode(_ mode: ModelInputMode) {
@@ -611,6 +682,9 @@ final class SOPModel: ObservableObject {
     }
 
     func saveModelSettings() {
+        if isGuidedTourActive {
+            guard guidedTourStep == .pickModel else { return }
+        }
         let cleanProvider = modelProvider
         let cleanModel = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanEndpoint = modelEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -721,6 +795,7 @@ final class SOPModel: ObservableObject {
 
     func startRecording() {
         guard phase == .idle else { return }
+        guard allowsGuidedTourAction(.startCapture) else { return }
 
         if isGuidedTourActive {
             startGuidedTourRecording()
@@ -833,6 +908,7 @@ final class SOPModel: ObservableObject {
 
     func stopRecording() {
         guard phase == .recording else { return }
+        guard allowsGuidedTourAction(.stopCapture) else { return }
         if isDebugSession {
             jumpToDebug(.preview)
             return
@@ -918,6 +994,7 @@ final class SOPModel: ObservableObject {
             banner = SOPBanner(text: "当前没有可发送的截图，请重新采集。", tone: .warning)
             return
         }
+        guard allowsGuidedTourAction(.startGenerate) else { return }
 
         if isDebugSession {
             jumpToDebug(.result)
@@ -993,20 +1070,24 @@ final class SOPModel: ObservableObject {
 
     func restartFromPreview() {
         guard phase == .preview else { return }
+        guard !isGuidedTourActive else { return }
         pendingConfirmation = .restartPreview
     }
 
     func requestClosePreview() {
         guard phase == .preview else { return }
+        guard !isGuidedTourActive else { return }
         pendingConfirmation = .closePreview
     }
 
     func deleteSelected() {
         guard selectedIndex != nil else { return }
+        guard !isGuidedTourActive else { return }
         pendingConfirmation = .deleteStep
     }
 
     func clearDraft() {
+        guard !isGuidedTourActive else { return }
         guard !steps.isEmpty || !title.isEmpty || !audience.isEmpty else {
             banner = SOPBanner(text: "当前草稿已经是空的。", tone: .info)
             return
@@ -1015,6 +1096,7 @@ final class SOPModel: ObservableObject {
     }
 
     func requestLoadDemo() {
+        guard !isGuidedTourActive else { return }
         if steps.isEmpty && title.isEmpty && audience.isEmpty {
             loadDemo()
             return
@@ -1100,6 +1182,7 @@ final class SOPModel: ObservableObject {
 
     func deletePreviewFrame(at index: Int) {
         guard previewFrames.indices.contains(index) else { return }
+        guard allowsGuidedTourAction(.deletePreviewFrame) else { return }
 
         let deletedFrame = previewFrames.remove(at: index)
         if let primaryInputEventID = deletedFrame.primaryInputEvent?.id,
@@ -1214,6 +1297,7 @@ final class SOPModel: ObservableObject {
     }
 
     func jumpToDebug(_ destination: DebugDestination) {
+        guard !isGuidedTourActive else { return }
         abandonLiveCaptureIfNeeded()
         isDebugSession = destination.keepsDebugSession
         isDebugAssistantPresented = false
@@ -1367,6 +1451,7 @@ final class SOPModel: ObservableObject {
     }
 
     func exportHTML() {
+        guard !isGuidedTourActive else { return }
         guard !steps.isEmpty else {
             banner = SOPBanner(text: "先采集一遍电脑操作，再导出说明。", tone: .warning)
             return
@@ -1385,6 +1470,7 @@ final class SOPModel: ObservableObject {
     }
 
     func exportMarkdown() {
+        guard allowsGuidedTourAction(.exportMarkdown) else { return }
         guard !steps.isEmpty else {
             banner = SOPBanner(text: "先采集一遍电脑操作，再导出说明。", tone: .warning)
             return

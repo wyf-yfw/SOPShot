@@ -12,6 +12,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
     private var countSubscription: AnyCancellable?
     private var sheetSubscription: AnyCancellable?
     private var sizeSubscription: AnyCancellable?
+    private var tourSubscription: AnyCancellable?
 
     private var orbWindow: NSPanel?
     private var morphWindow: NSPanel?
@@ -29,6 +30,8 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
     private let orbMargin: CGFloat = 18
     private let previewContentSize = NSSize(width: 1120, height: 720)
     private let idleContentSize = NSSize(width: 400, height: 210)
+    private static let orbOriginXKey = "sopshot.orb.originX"
+    private static let orbOriginYKey = "sopshot.orb.originY"
 
     private weak var boundMainWindow: NSWindow?
     private var windowWatchers: [NSObjectProtocol] = []
@@ -55,6 +58,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
     init(model: SOPModel) {
         self.model = model
         super.init()
+        lastOrbFrame = Self.loadPersistedOrbFrame(diameter: model.captureOrbSize.diameter)
 
         stateSubscription = Publishers.CombineLatest4(
             model.$phase,
@@ -119,6 +123,14 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
             .sink { [weak self] _ in
                 Task { @MainActor in
                     self?.resizeVisibleOrb()
+                }
+            }
+
+        tourSubscription = model.$guidedTourStep
+            .receive(on: RunLoop.main)
+            .sink { [weak self] step in
+                Task { @MainActor in
+                    self?.applyMainWindowResizeLock(locked: step != nil)
                 }
             }
 
@@ -359,6 +371,8 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
                 model?.dismissOnboarding()
             }
             self?.onboardingFlow = nil
+            // Tour end / Esc should always land back on the idle orb shell.
+            self?.ensureIdleOrbShellIfNeeded()
         }
         onboardingFlow = flow
         flow.start(on: screen, orbFrame: orbFrame)
@@ -533,6 +547,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
                             self?.isRestoring = false
                             self?.savedScreen = nil
                             // Re-cut the coach spotlight now that the preview window is final.
+                            self?.applyMainWindowResizeLock(locked: self?.model?.isGuidedTourActive == true)
                             self?.onboardingFlow?.refresh()
                         }
                     })
@@ -553,8 +568,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
     private func presentOrb(mode: OrbMode, at frame: NSRect, animated: Bool) {
         let screen = screen(forOrbFrame: frame)
         let frame = boundedOrbFrame(frame, on: screen)
-        lastOrbFrame = frame
-        lastOrbScreen = screen
+        rememberOrbFrame(frame, on: screen)
         orbMode = mode
         if orbWindow == nil {
             let panel = NSPanel(
@@ -648,8 +662,10 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
     @objc private func orbClicked(_ sender: Any?) {
         switch orbMode {
         case .idle:
+            guard model?.allowsGuidedTourAction(.openOrbMenu) != false else { return }
             showIdleMenu()
         case .recording:
+            guard model?.allowsGuidedTourAction(.stopCapture) != false else { return }
             updateOrbAppearance(count: model?.queuedScreenshotCount ?? 0)
             orbMode = .extracting
             updateOrbAppearance(count: model?.queuedScreenshotCount ?? 0)
@@ -662,8 +678,22 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
     private func showIdleMenu() {
         guard let button = orbButton else { return }
         deferredIdleMenuAction = nil
+
+        // Advance openOrb → pickModel before building items, otherwise every action
+        // stays disabled for the menu that was constructed under step 1 permissions.
+        if model?.guidedTourStep == .openOrb {
+            model?.noteGuidedTourEvent(.orbMenuOpened)
+            onboardingFlow?.refresh()
+        }
+
         let menu = NSMenu()
         menu.autoenablesItems = false
+
+        let touring = model?.guidedTourStep != nil
+        let allowStart = model?.allowsGuidedTourAction(.startCapture) != false
+        let allowSelectModel = model?.allowsGuidedTourAction(.selectModel) != false
+        let allowModelSettings = model?.allowsGuidedTourAction(.openModelSettings) != false
+        let options = model?.configuredModelOptions ?? []
 
         let startItem = NSMenuItem(
             title: "开始截图",
@@ -672,17 +702,29 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
         )
         startItem.keyEquivalentModifierMask = [.command, .shift]
         startItem.target = self
+        startItem.isEnabled = allowStart
         menu.addItem(startItem)
 
         menu.addItem(.separator())
 
         let modelRoot = NSMenuItem(title: "选择模型", action: nil, keyEquivalent: "")
         let modelMenu = NSMenu()
-        let options = model?.configuredModelOptions ?? []
         if options.isEmpty {
-            let empty = NSMenuItem(title: "尚未配置视觉模型", action: nil, keyEquivalent: "")
-            empty.isEnabled = false
-            modelMenu.addItem(empty)
+            if touring {
+                let mock = NSMenuItem(
+                    title: "演示模型 · 引导专用",
+                    action: #selector(menuSelectModel(_:)),
+                    keyEquivalent: ""
+                )
+                mock.target = self
+                mock.representedObject = SOPModel.guidedTourMockModelID
+                mock.isEnabled = allowSelectModel
+                modelMenu.addItem(mock)
+            } else {
+                let empty = NSMenuItem(title: "尚未配置视觉模型", action: nil, keyEquivalent: "")
+                empty.isEnabled = false
+                modelMenu.addItem(empty)
+            }
         } else {
             for option in options {
                 let item = NSMenuItem(
@@ -692,6 +734,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
                 )
                 item.target = self
                 item.representedObject = option.id
+                item.isEnabled = allowSelectModel
                 if option.id == model?.selectedConfiguredModelID {
                     item.state = .on
                 }
@@ -699,6 +742,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
             }
         }
         menu.setSubmenu(modelMenu, for: modelRoot)
+        modelRoot.isEnabled = allowSelectModel
         menu.addItem(modelRoot)
 
         let captureSettings = NSMenuItem(
@@ -707,6 +751,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
             keyEquivalent: ""
         )
         captureSettings.target = self
+        captureSettings.isEnabled = !touring
         menu.addItem(captureSettings)
 
         let modelSettings = NSMenuItem(
@@ -715,6 +760,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
             keyEquivalent: ""
         )
         modelSettings.target = self
+        modelSettings.isEnabled = allowModelSettings
         menu.addItem(modelSettings)
 
         menu.addItem(.separator())
@@ -725,6 +771,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
             keyEquivalent: ""
         )
         help.target = self
+        help.isEnabled = !touring
         menu.addItem(help)
 
         if FeatureFlags.showsDebugAssistant {
@@ -734,6 +781,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
                 keyEquivalent: ""
             )
             debug.target = self
+            debug.isEnabled = !touring
             menu.addItem(debug)
         }
 
@@ -745,46 +793,43 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
             keyEquivalent: "q"
         )
         quit.keyEquivalentModifierMask = [.command]
+        quit.isEnabled = !touring
         menu.addItem(quit)
 
         menu.delegate = self
         let point = NSPoint(x: 0, y: button.bounds.height + 2)
-        // popUp blocks until the menu dismisses. Advance the "menu opened" tour step in
-        // menuWillOpen so copy updates while the menu is still visible. Defer item actions
-        // (startRecording / sheets) until after dismiss so they don't fight menu tracking.
+        // popUp blocks until the menu dismisses. Defer item actions until after dismiss
+        // so startRecording / sheets don't fight menu tracking.
         menu.popUp(positioning: nil, at: point, in: button)
 
-        // Fallback if menuWillOpen never ran (e.g. popUp failed).
-        if model?.guidedTourStep == .openOrb {
-            model?.noteGuidedTourEvent(.orbMenuOpened)
-            onboardingFlow?.refresh()
-        }
         let action = deferredIdleMenuAction
         deferredIdleMenuAction = nil
         action?()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        guard let step = model?.guidedTourStep else { return }
-        switch step {
-        case .openOrb:
-            model?.noteGuidedTourEvent(.orbMenuOpened)
+        // Coach copy / spotlight may still need a sync pass while the menu is visible.
+        if model?.guidedTourStep == .pickModel || model?.guidedTourStep == .startCapture {
             onboardingFlow?.refresh()
-        case .startCapture:
-            onboardingFlow?.refresh()
-        default:
-            break
         }
     }
 
     @objc private func menuStartCapture(_ sender: Any?) {
+        guard model?.allowsGuidedTourAction(.startCapture) != false else { return }
         deferredIdleMenuAction = { [weak self] in
             self?.model?.startRecording()
         }
     }
 
     @objc private func menuSelectModel(_ sender: NSMenuItem) {
+        guard model?.allowsGuidedTourAction(.selectModel) != false else { return }
         guard let id = sender.representedObject as? String else { return }
+        if id == SOPModel.guidedTourMockModelID {
+            deferredIdleMenuAction = { [weak self] in
+                self?.model?.selectGuidedTourMockModel()
+            }
+            return
+        }
         deferredIdleMenuAction = { [weak self] in
             guard let option = self?.model?.configuredModelOptions.first(where: { $0.id == id }) else { return }
             self?.model?.selectConfiguredModel(option)
@@ -792,24 +837,28 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
     }
 
     @objc private func menuCaptureSettings(_ sender: Any?) {
+        guard model?.isGuidedTourActive != true else { return }
         deferredIdleMenuAction = { [weak self] in
             self?.model?.isCaptureSettingsPresented = true
         }
     }
 
     @objc private func menuModelSettings(_ sender: Any?) {
+        guard model?.allowsGuidedTourAction(.openModelSettings) != false else { return }
         deferredIdleMenuAction = { [weak self] in
             self?.model?.isModelSettingsPresented = true
         }
     }
 
     @objc private func menuHelp(_ sender: Any?) {
+        guard model?.isGuidedTourActive != true else { return }
         deferredIdleMenuAction = { [weak self] in
             self?.model?.beginGuidedTour()
         }
     }
 
     @objc private func menuDebug(_ sender: Any?) {
+        guard model?.isGuidedTourActive != true else { return }
         deferredIdleMenuAction = { [weak self] in
             self?.model?.isDebugAssistantPresented = true
         }
@@ -860,9 +909,13 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
             window.alphaValue = 1
         }
         savedScreen = nil
+        applyMainWindowResizeLock(locked: model?.isGuidedTourActive == true)
     }
 
     private func tearDownOrb(animated: Bool) {
+        if let frame = orbWindow?.frame {
+            rememberOrbFrame(frame, on: screen(forOrbFrame: frame))
+        }
         onboardingFlow?.stop()
         onboardingFlow = nil
         let panel = orbWindow
@@ -1037,7 +1090,14 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
     }
 
     private func defaultOrbFrame() -> NSRect {
-        orbFrame(for: NSScreen.main)
+        if let restored = lastOrbFrame ?? Self.loadPersistedOrbFrame(diameter: orbSize) {
+            let screen = screen(forOrbFrame: restored) ?? NSScreen.main
+            return boundedOrbFrame(
+                NSRect(origin: restored.origin, size: NSSize(width: orbSize, height: orbSize)),
+                on: screen
+            )
+        }
+        return orbFrame(for: NSScreen.main)
     }
 
     private func resizeVisibleOrb() {
@@ -1054,8 +1114,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
         frame = boundedOrbFrame(frame, on: screen)
         window.setFrame(frame, display: true)
         button.setOrbDiameter(diameter)
-        lastOrbFrame = frame
-        lastOrbScreen = screen
+        rememberOrbFrame(frame, on: screen)
         updateOnboardingAnchor(frame: frame, on: screen)
     }
 
@@ -1072,8 +1131,7 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
         frame.origin = origin
         frame = boundedOrbFrame(frame, on: screen)
         window.setFrame(frame, display: true)
-        lastOrbFrame = frame
-        lastOrbScreen = screen
+        rememberOrbFrame(frame, on: screen)
         updateOnboardingAnchor(frame: frame, on: screen)
     }
 
@@ -1090,6 +1148,61 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
         frame.origin.x = min(max(frame.origin.x, visible.minX), max(visible.minX, visible.maxX - frame.width))
         frame.origin.y = min(max(frame.origin.y, visible.minY), max(visible.minY, visible.maxY - frame.height))
         return frame
+    }
+
+    private func rememberOrbFrame(_ frame: NSRect, on screen: NSScreen?) {
+        lastOrbFrame = frame
+        lastOrbScreen = screen
+        persistOrbPosition(frame)
+    }
+
+    func persistOrbPositionNow() {
+        guard let frame = orbWindow?.frame ?? lastOrbFrame else { return }
+        persistOrbPosition(frame)
+    }
+
+    private func persistOrbPosition(_ frame: NSRect) {
+        UserDefaults.standard.set(Double(frame.origin.x), forKey: Self.orbOriginXKey)
+        UserDefaults.standard.set(Double(frame.origin.y), forKey: Self.orbOriginYKey)
+    }
+
+    private static func loadPersistedOrbFrame(diameter: CGFloat) -> NSRect? {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: orbOriginXKey) != nil,
+              defaults.object(forKey: orbOriginYKey) != nil else {
+            return nil
+        }
+        let origin = NSPoint(
+            x: defaults.double(forKey: orbOriginXKey),
+            y: defaults.double(forKey: orbOriginYKey)
+        )
+        var frame = NSRect(origin: origin, size: NSSize(width: diameter, height: diameter))
+        let screen = NSScreen.screens.first(where: { $0.frame.intersects(frame) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let visible = screen?.visibleFrame else { return frame }
+        frame.origin.x = min(max(frame.origin.x, visible.minX), max(visible.minX, visible.maxX - frame.width))
+        frame.origin.y = min(max(frame.origin.y, visible.minY), max(visible.minY, visible.maxY - frame.height))
+        return frame
+    }
+
+    private func applyMainWindowResizeLock(locked: Bool) {
+        guard let window = sopshotWindow() else { return }
+        if locked {
+            window.styleMask.remove(.resizable)
+            let size = window.frame.size
+            window.minSize = size
+            window.maxSize = size
+        } else {
+            if !window.styleMask.contains(.resizable) {
+                window.styleMask.insert(.resizable)
+            }
+            window.minSize = NSSize(width: 360, height: 180)
+            window.maxSize = NSSize(
+                width: CGFloat.greatestFiniteMagnitude,
+                height: CGFloat.greatestFiniteMagnitude
+            )
+        }
     }
 }
 

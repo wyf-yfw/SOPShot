@@ -28,6 +28,7 @@ else
 fi
 
 print "构建 SOPShot（$BUILD_CONFIGURATION）..."
+"$PROJECT_DIR/scripts/sync-version.sh"
 (cd "$PROJECT_DIR" && /usr/bin/swift build -c "$BUILD_CONFIGURATION" "${SWIFT_BUILD_FLAGS[@]}")
 BIN_DIR="$(cd "$PROJECT_DIR" && /usr/bin/swift build -c "$BUILD_CONFIGURATION" "${SWIFT_BUILD_FLAGS[@]}" --show-bin-path)"
 

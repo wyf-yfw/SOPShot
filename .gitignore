@@ -7,6 +7,8 @@ Package.resolved
 SOPShot.app/
 *.dSYM/
 *.product/
+SOPShot-*.dmg
+.dmg-stage/
 
 # macOS
 .DS_Store

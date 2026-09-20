@@ -1,0 +1,22 @@
+name: Guard main
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  require-release-branch:
+    name: require-release-branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only allow PRs from release
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_REF" == "release" || "$HEAD_REF" == release/* ]]; then
+            echo "允许合入：$HEAD_REF → main"
+            exit 0
+          fi
+          echo "::error::main 只能从 release / release/* 分支合入（当前 head：$HEAD_REF）"
+          exit 1

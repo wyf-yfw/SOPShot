@@ -55,6 +55,7 @@ struct ContentView: View {
                         }
                         .help("跳转到任意页面，不必走完整流程")
                         .accessibilityLabel("调试助手")
+                        .disabled(model.isGuidedTourActive)
                     }
                 }
                 ToolbarItem(placement: .automatic) {
@@ -62,21 +63,31 @@ struct ContentView: View {
                         Button("截图设置…") {
                             model.isCaptureSettingsPresented = true
                         }
-                        .disabled(model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        .disabled(
+                            model.isGuidedTourActive
+                                || (model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        )
                         Button("模型设置…") {
                             model.isModelSettingsPresented = true
                         }
-                        .disabled(model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        .disabled(
+                            model.isGuidedTourActive
+                                || (model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        )
                         Divider()
                         Button("使用说明…") {
                             model.beginGuidedTour()
                         }
-                        .disabled(model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        .disabled(
+                            model.isGuidedTourActive
+                                || (model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        )
                     } label: {
                         Image(systemName: "gearshape")
                     }
                     .help("截图触发、模型配置与使用说明")
                     .accessibilityLabel("设置")
+                    .disabled(model.isGuidedTourActive)
                 }
             }
         }
@@ -647,10 +658,12 @@ struct CaptureFramePreviewView: View {
                             model.restartFromPreview()
                         }
                         .buttonStyle(SOPQuietButtonStyle())
+                        .disabled(model.isGuidedTourActive)
                         Button("开始生成说明") {
                             model.startAIProcessing()
                         }
                         .buttonStyle(SOPFilledButtonStyle(tone: .accent))
+                        .disabled(!model.allowsGuidedTourAction(.startGenerate))
                         .accessibilityHint("确认截图后，将画面和操作数据发送给所选模型生成说明。")
                     }
                     .padding(.horizontal, 30)
@@ -691,6 +704,7 @@ struct CaptureFramePreviewView: View {
                                         Label("删除图片", systemImage: "trash")
                                     }
                                     .buttonStyle(SOPDangerButtonStyle())
+                                    .disabled(!model.allowsGuidedTourAction(.deletePreviewFrame))
                                 }
                             }
                             .frame(maxWidth: .infinity)
@@ -835,6 +849,7 @@ struct CaptureFramePreviewView: View {
                                 model.restartFromPreview()
                             }
                             .buttonStyle(SOPQuietButtonStyle())
+                            .disabled(model.isGuidedTourActive)
                         }
                         .frame(maxWidth: .infinity, minHeight: 360)
                     }
@@ -1017,17 +1032,22 @@ struct ResultPreviewView: View {
                     model.startRecording()
                 }
                 .buttonStyle(SOPQuietButtonStyle())
+                .disabled(model.isGuidedTourActive)
                 Button("编辑结果") {
                     model.isEditing = true
                 }
                 .buttonStyle(SOPQuietButtonStyle())
+                .disabled(model.isGuidedTourActive)
                 Menu {
                     Button("导出 HTML") { model.exportHTML() }
+                        .disabled(model.isGuidedTourActive)
                     Button("导出 Markdown") { model.exportMarkdown() }
+                        .disabled(!model.allowsGuidedTourAction(.exportMarkdown))
                 } label: {
                     Text("导出")
                 }
                 .buttonStyle(SOPDarkButtonStyle())
+                .disabled(model.isGuidedTourActive && !model.allowsGuidedTourAction(.exportMarkdown))
             }
             .padding(.horizontal, 24)
             .frame(height: 70)
@@ -1202,28 +1222,58 @@ struct OnboardingUnavailableView: View {
 }
 
 private struct WindowSizeView: NSViewRepresentable {
+    @EnvironmentObject private var model: SOPModel
     let targetContentSize: NSSize
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         DispatchQueue.main.async {
-            Self.fit(window: view.window, targetContentSize: targetContentSize)
+            Self.fit(
+                window: view.window,
+                targetContentSize: targetContentSize,
+                locksSize: model.isGuidedTourActive
+            )
         }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
-            Self.fit(window: nsView.window, targetContentSize: targetContentSize)
+            Self.fit(
+                window: nsView.window,
+                targetContentSize: targetContentSize,
+                locksSize: model.isGuidedTourActive
+            )
         }
     }
 
-    private static func fit(window: NSWindow?, targetContentSize: NSSize) {
+    private static func fit(window: NSWindow?, targetContentSize: NSSize, locksSize: Bool) {
         guard let window else { return }
         let currentSize = window.contentLayoutRect.size
-        guard abs(currentSize.width - targetContentSize.width) > 20
-                || abs(currentSize.height - targetContentSize.height) > 20 else { return }
-        window.setContentSize(targetContentSize)
+        if abs(currentSize.width - targetContentSize.width) > 20
+            || abs(currentSize.height - targetContentSize.height) > 20
+        {
+            window.setContentSize(targetContentSize)
+        }
+        applyResizeLock(window: window, locked: locksSize)
+    }
+
+    private static func applyResizeLock(window: NSWindow, locked: Bool) {
+        if locked {
+            window.styleMask.remove(.resizable)
+            let size = window.frame.size
+            window.minSize = size
+            window.maxSize = size
+        } else {
+            if !window.styleMask.contains(.resizable) {
+                window.styleMask.insert(.resizable)
+            }
+            window.minSize = NSSize(width: 360, height: 180)
+            window.maxSize = NSSize(
+                width: CGFloat.greatestFiniteMagnitude,
+                height: CGFloat.greatestFiniteMagnitude
+            )
+        }
     }
 }
 
@@ -1479,10 +1529,13 @@ struct WorkbenchView: View {
                         .buttonStyle(SOPQuietButtonStyle())
                     Button("重新开始") { model.clearDraft() }
                         .buttonStyle(SOPQuietButtonStyle())
+                        .disabled(model.isGuidedTourActive)
                     Button("导出 HTML") { model.exportHTML() }
                         .buttonStyle(SOPDarkButtonStyle())
+                        .disabled(model.isGuidedTourActive)
                     Button("导出 Markdown") { model.exportMarkdown() }
                         .buttonStyle(SOPAccentButtonStyle())
+                        .disabled(!model.allowsGuidedTourAction(.exportMarkdown))
                 }
             }
             .padding(.horizontal, 24)

@@ -1,0 +1,111 @@
+name: Release DMG
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-dmg-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: build-and-release
+    runs-on: macos-14
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip version-bump commits
+        id: gate
+        run: |
+          set -euo pipefail
+          msg="$(git log -1 --pretty=%s)"
+          if [[ "$msg" == chore:\ bump\ version\ to\ * ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "跳过版本递增提交触发的工作流：$msg"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read version
+        if: steps.gate.outputs.skip != 'true'
+        id: version
+        run: |
+          set -euo pipefail
+          chmod +x scripts/*.sh
+          ./scripts/sync-version.sh
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if release already exists
+        if: steps.gate.outputs.skip != 'true'
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG 已存在，跳过构建"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Select Xcode
+        if: steps.gate.outputs.skip != 'true' && steps.existing.outputs.exists != 'true'
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Build app
+        if: steps.gate.outputs.skip != 'true' && steps.existing.outputs.exists != 'true'
+        run: ./scripts/build-app.sh
+
+      - name: Package DMG
+        if: steps.gate.outputs.skip != 'true' && steps.existing.outputs.exists != 'true'
+        run: ./scripts/package-dmg.sh
+
+      - name: Create GitHub Release
+        if: steps.gate.outputs.skip != 'true' && steps.existing.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          DMG="SOPShot-${VERSION}.dmg"
+          gh release create "$TAG" "$DMG" \
+            --title "SOPShot $VERSION" \
+            --notes "SOPShot ${VERSION} macOS DMG.
+
+首次打开若提示未验证开发者：右键应用 → 打开，或在系统设置 → 隐私与安全性中允许。
+
+本构建使用 ad-hoc 签名，适合分发试用。"
+
+      - name: Bump version on release branch
+        if: steps.gate.outputs.skip != 'true' && steps.existing.outputs.exists != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch origin release
+          git checkout -B release origin/release
+          git merge --ff-only origin/main || git reset --hard origin/main
+          ./scripts/bump-version.sh
+          NEXT="$(tr -d '[:space:]' < VERSION)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION Resources/Info.plist
+          if git diff --cached --quiet; then
+            echo "无需提交"
+            exit 0
+          fi
+          git commit -m "chore: bump version to ${NEXT}"
+          git push origin HEAD:release

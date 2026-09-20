@@ -32,7 +32,7 @@ struct SOPShotApp: App {
                         Button(destination.title) {
                             model.jumpToDebug(destination)
                         }
-                        .disabled(model.isHelpPresented)
+                        .disabled(model.isGuidedTourActive || model.isHelpPresented)
                     }
                 }
             }
@@ -52,7 +52,8 @@ struct SOPShotApp: App {
                                 : "开始截图"
                         )
                 }
-                .disabled(model.isHelpPresented
+                .disabled(model.isGuidedTourActive
+                    || model.isHelpPresented
                     || model.phase == .preparing
                     || model.phase == .extracting
                     || model.phase == .processing)
@@ -73,6 +74,10 @@ final class SOPShotAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         SOPShotAppDelegate.sharedOrb?.ensureIdleOrbShellIfNeeded()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        SOPShotAppDelegate.sharedOrb?.persistOrbPositionNow()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

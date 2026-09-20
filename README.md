@@ -109,6 +109,22 @@ open SOPShot.app
 
 快捷键：`⌘⇧R` 开始 / 结束截图（在检查页则是开始生成）。
 
+## 版本与发布
+
+- 当前版本见仓库根目录 [`VERSION`](VERSION)（现为 **1.0**）
+- `main` 受保护：不能直接推送，只能从 `release` / `release/*` 发 PR 合入
+- 合入 `main` 后，CI 会：
+  1. 用当前 `VERSION` 构建 macOS `.app` 并打成 DMG
+  2. 发布到 [GitHub Releases](https://github.com/wyf-yfw/SOPShot/releases)（标签 `v主.次`）
+  3. 在 `release` 分支把版本号 +1（例如 `1.0` → `1.1`），供下一轮合入
+
+本地正式包（无开发证书、ad-hoc 签名）：
+
+```bash
+./scripts/build-app.sh
+./scripts/package-dmg.sh
+```
+
 ## 当前边界
 
 - 默认只采主显示器
