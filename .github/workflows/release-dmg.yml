@@ -27,12 +27,15 @@ jobs:
         run: |
           set -euo pipefail
           msg="$(git log -1 --pretty=%s)"
-          if [[ "$msg" == chore:\ bump\ version\ to\ * ]]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "跳过版本递增提交触发的工作流：$msg"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          case "$msg" in
+            "chore: bump version to "*)
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "跳过版本递增提交触发的工作流：$msg"
+              ;;
+            *)
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
       - name: Read version
         if: steps.gate.outputs.skip != 'true'
@@ -81,18 +84,10 @@ jobs:
         run: |
           set -euo pipefail
           DMG="SOPShot-${VERSION}.dmg"
-          gh release create "$TAG" "$DMG" \
-            --title "SOPShot $VERSION" \
-            --notes "SOPShot ${VERSION} macOS DMG.
-
-首次打开若提示未验证开发者：右键应用 → 打开，或在系统设置 → 隐私与安全性中允许。
-
-本构建使用 ad-hoc 签名，适合分发试用。"
+          gh release create "$TAG" "$DMG" --title "SOPShot $VERSION" --notes "SOPShot ${VERSION} macOS DMG. First launch may require right-click Open if macOS blocks the ad-hoc signed build."
 
       - name: Bump version on release branch
         if: steps.gate.outputs.skip != 'true' && steps.existing.outputs.exists != 'true'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           git fetch origin release
