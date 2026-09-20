@@ -4,25 +4,27 @@ import QuartzCore
 import SwiftUI
 
 @MainActor
-final class CaptureOrbController: NSObject, ObservableObject {
+final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
     @Published private(set) var isOrbVisible = false
 
     private weak var model: SOPModel?
     private var stateSubscription: AnyCancellable?
     private var countSubscription: AnyCancellable?
     private var sheetSubscription: AnyCancellable?
+    private var sizeSubscription: AnyCancellable?
 
     private var orbWindow: NSPanel?
     private var morphWindow: NSPanel?
     private var orbButton: CaptureOrbButton?
-    private var savedMainOrigin: NSPoint?
+    private var lastOrbFrame: NSRect?
+    private weak var lastOrbScreen: NSScreen?
     private var savedScreen: NSScreen?
     private var isCollapsing = false
     private var isRestoring = false
     private var hasCollapsedForSession = false
     private var orbMode: OrbMode = .idle
 
-    private let orbSize: CGFloat = 54
+    private var orbSize: CGFloat { model?.captureOrbSize.diameter ?? CaptureOrbSize.large.diameter }
     private let blobLaunchSize: CGFloat = 76
     private let orbMargin: CGFloat = 18
     private let previewContentSize = NSSize(width: 1120, height: 720)
@@ -35,9 +37,9 @@ final class CaptureOrbController: NSObject, ObservableObject {
     private var auxiliaryPanel: NSPanel?
     private var auxiliaryKind: AuxiliaryKind?
     private var closingAuxiliaryProgrammatically = false
+    private var onboardingFlow: OnboardingFlowController?
 
     private enum AuxiliaryKind: Equatable {
-        case help
         case modelSettings
         case captureSettings
         case debug
@@ -98,6 +100,7 @@ final class CaptureOrbController: NSObject, ObservableObject {
                     debug: sheets.2,
                     help: sheets.3
                 )
+                self?.updateOrbAppearance(count: self?.model?.queuedScreenshotCount ?? 0)
             }
         }
 
@@ -107,6 +110,15 @@ final class CaptureOrbController: NSObject, ObservableObject {
                 Task { @MainActor in
                     guard self?.orbMode == .recording else { return }
                     self?.updateOrbAppearance(count: count)
+                }
+            }
+
+        sizeSubscription = model.$captureOrbSize
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.resizeVisibleOrb()
                 }
             }
 
@@ -137,8 +149,20 @@ final class CaptureOrbController: NSObject, ObservableObject {
 
     func bindMainWindow(_ window: NSWindow?) {
         guard let window, !(window is NSPanel) else { return }
+        let isNewWindow = boundMainWindow !== window
         boundMainWindow = window
         window.identifier = NSUserInterfaceItemIdentifier("sopshot.main")
+        if let closeButton = window.standardWindowButton(.closeButton) {
+            closeButton.target = self
+            closeButton.action = #selector(mainWindowCloseButtonClicked(_:))
+        }
+
+        guard isNewWindow else { return }
+        let currentSize = window.contentView?.bounds.size ?? window.contentLayoutRect.size
+        let contentSize = currentSize.width > 0 && currentSize.height > 0
+            ? currentSize
+            : idleContentSize
+        centerWindow(window, on: presentationScreen(for: window), contentSize: contentSize)
     }
 
     func ensureIdleOrbShellIfNeeded() {
@@ -162,6 +186,15 @@ final class CaptureOrbController: NSObject, ObservableObject {
         bindMainWindow(window)
         hideMainWindow()
         presentOrb(mode: .idle, animated: orbWindow == nil)
+    }
+
+    @objc private func mainWindowCloseButtonClicked(_ sender: Any?) {
+        guard let window = sopshotWindow() else { return }
+        if model?.phase == .preview {
+            model?.requestClosePreview()
+        } else {
+            window.performClose(sender)
+        }
     }
 
     private func synchronize(
@@ -232,6 +265,10 @@ final class CaptureOrbController: NSObject, ObservableObject {
             tearDownOrb(animated: false)
             showMainWindow(contentSize: previewContentSize, animated: false)
         }
+
+        if model?.isGuidedTourActive == true {
+            synchronizeOnboardingFlow(isPresented: true, prefersOrbShell: true)
+        }
     }
 
     private func enterIdleOrb(fromCaptureSession: Bool) {
@@ -251,15 +288,15 @@ final class CaptureOrbController: NSObject, ObservableObject {
         debug: Bool,
         help: Bool
     ) {
+        synchronizeOnboardingFlow(isPresented: help, prefersOrbShell: prefersOrbShell)
+
         guard prefersOrbShell else {
             closeAuxiliaryPanel()
             return
         }
 
         let kind: AuxiliaryKind?
-        if help {
-            kind = .help
-        } else if modelSettings {
+        if modelSettings {
             kind = .modelSettings
         } else if captureSettings {
             kind = .captureSettings
@@ -275,12 +312,62 @@ final class CaptureOrbController: NSObject, ObservableObject {
         }
 
         if auxiliaryKind == kind, auxiliaryPanel != nil {
+            if let panel = auxiliaryPanel, !panel.isVisible {
+                centerWindow(panel, on: presentationScreen(for: panel))
+            }
             auxiliaryPanel?.makeKeyAndOrderFront(nil)
             return
         }
 
         closeAuxiliaryPanel()
         presentAuxiliaryPanel(kind: kind)
+    }
+
+    private func synchronizeOnboardingFlow(isPresented: Bool, prefersOrbShell: Bool) {
+        guard let model else {
+            onboardingFlow?.stop()
+            onboardingFlow = nil
+            return
+        }
+
+        let shouldRun = model.isGuidedTourActive || (isPresented && prefersOrbShell)
+        guard shouldRun else {
+            onboardingFlow?.stop()
+            onboardingFlow = nil
+            return
+        }
+
+        if isPresented, model.guidedTourStep == nil {
+            model.beginGuidedTour()
+        }
+
+        let orbFrame = orbWindow?.frame ?? defaultOrbFrame()
+        let screen = screen(forOrbFrame: orbFrame)
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let screen else { return }
+
+        if let onboardingFlow {
+            onboardingFlow.updateAnchor(on: screen, orbFrame: orbFrame)
+            return
+        }
+
+        let flow = OnboardingFlowController(model: model) { [weak self, weak model] completed in
+            if completed {
+                model?.completeOnboarding()
+            } else {
+                model?.dismissOnboarding()
+            }
+            self?.onboardingFlow = nil
+        }
+        onboardingFlow = flow
+        flow.start(on: screen, orbFrame: orbFrame)
+    }
+
+    private func updateOnboardingAnchor(frame: NSRect, on screen: NSScreen?) {
+        guard let onboardingFlow,
+              let screen = connectedScreen(screen) else { return }
+        onboardingFlow.updateAnchor(on: screen, orbFrame: frame)
     }
 
     private func presentAuxiliaryPanel(kind: AuxiliaryKind) {
@@ -290,25 +377,6 @@ final class CaptureOrbController: NSObject, ObservableObject {
         let size: NSSize
         let root: AnyView
         switch kind {
-        case .help:
-            title = "使用说明"
-            size = NSSize(width: 520, height: 480)
-            root = AnyView(
-                OnboardingView(
-                    onLoadDemo: { [weak self] in
-                        model.completeOnboarding()
-                        self?.closeAuxiliaryPanel()
-                        DispatchQueue.main.async {
-                            model.loadDemo()
-                        }
-                    },
-                    onDismiss: { [weak self] in
-                        model.completeOnboarding()
-                        self?.closeAuxiliaryPanel()
-                    }
-                )
-                .preferredColorScheme(.dark)
-            )
         case .modelSettings:
             title = "模型设置"
             size = NSSize(width: 640, height: 480)
@@ -340,7 +408,7 @@ final class CaptureOrbController: NSObject, ObservableObject {
         host.frame = NSRect(origin: .zero, size: size)
         panel.contentView = host
         panel.setContentSize(size)
-        panel.center()
+        centerWindow(panel, on: presentationScreen(for: panel), contentSize: size)
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
@@ -363,8 +431,6 @@ final class CaptureOrbController: NSObject, ObservableObject {
 
     private func clearPresentationFlag(for kind: AuxiliaryKind) {
         switch kind {
-        case .help:
-            model?.isHelpPresented = false
         case .modelSettings:
             model?.isModelSettingsPresented = false
         case .captureSettings:
@@ -383,11 +449,10 @@ final class CaptureOrbController: NSObject, ObservableObject {
 
         isCollapsing = true
         hasCollapsedForSession = true
-        savedMainOrigin = mainWindow.frame.origin
-        savedScreen = mainWindow.screen ?? NSScreen.main
+        savedScreen = connectedScreen(mainWindow.screen) ?? presentationScreen(for: mainWindow)
 
         let windowFrame = mainWindow.frame
-        let endFrame = orbFrame(for: mainWindow.screen ?? NSScreen.main)
+        let endFrame = lastOrbFrame ?? orbFrame(for: mainWindow.screen ?? NSScreen.main)
         let launchFrame = centeredSquare(size: blobLaunchSize, in: windowFrame)
         let morph = makeMorphPanel(startingAt: launchFrame, cornerRadius: blobLaunchSize / 2)
         morphWindow = morph
@@ -427,11 +492,10 @@ final class CaptureOrbController: NSObject, ObservableObject {
         isRestoring = true
 
         let mainWindow = sopshotWindow()
-        let screen = savedScreen ?? mainWindow?.screen ?? NSScreen.main
+        let screen = presentationScreen(for: mainWindow, preferred: savedScreen)
         let targetFrame = windowFrame(
             forContentSize: contentSize,
             on: screen,
-            preferredOrigin: savedMainOrigin,
             using: mainWindow
         )
 
@@ -467,7 +531,6 @@ final class CaptureOrbController: NSObject, ObservableObject {
                             NSApp.activate(ignoringOtherApps: true)
                             mainWindow.makeKeyAndOrderFront(nil)
                             self?.isRestoring = false
-                            self?.savedMainOrigin = nil
                             self?.savedScreen = nil
                         }
                     })
@@ -477,16 +540,19 @@ final class CaptureOrbController: NSObject, ObservableObject {
             tearDownOrb(animated: false)
             showMainWindow(contentSize: contentSize, animated: false)
             isRestoring = false
-            savedMainOrigin = nil
             savedScreen = nil
         }
     }
 
     private func presentOrb(mode: OrbMode, animated: Bool) {
-        presentOrb(mode: mode, at: orbWindow?.frame ?? defaultOrbFrame(), animated: animated)
+        presentOrb(mode: mode, at: orbWindow?.frame ?? lastOrbFrame ?? defaultOrbFrame(), animated: animated)
     }
 
     private func presentOrb(mode: OrbMode, at frame: NSRect, animated: Bool) {
+        let screen = screen(forOrbFrame: frame)
+        let frame = boundedOrbFrame(frame, on: screen)
+        lastOrbFrame = frame
+        lastOrbScreen = screen
         orbMode = mode
         if orbWindow == nil {
             let panel = NSPanel(
@@ -507,9 +573,13 @@ final class CaptureOrbController: NSObject, ObservableObject {
             panel.ignoresMouseEvents = false
 
             let button = CaptureOrbButton(frame: NSRect(origin: .zero, size: frame.size))
+            button.autoresizingMask = [.width, .height]
             button.target = self
             button.action = #selector(orbClicked(_:))
-            button.sendAction(on: .leftMouseDown)
+            button.setAccessibilityHelp("聚焦后可用方向键微调位置，按住并拖动可移动；轻点打开菜单或结束采集。")
+            button.onMove = { [weak self] origin, followsPointer in
+                self?.moveOrb(to: origin, followsPointer: followsPointer)
+            }
             panel.contentView = button
 
             orbWindow = panel
@@ -519,6 +589,7 @@ final class CaptureOrbController: NSObject, ObservableObject {
 
         updateOrbAppearance(count: model?.queuedScreenshotCount ?? 0)
         orbWindow?.setFrame(frame, display: true)
+        orbButton?.setOrbDiameter(frame.width)
         if animated {
             orbWindow?.alphaValue = 0
             orbWindow?.orderFrontRegardless()
@@ -530,6 +601,13 @@ final class CaptureOrbController: NSObject, ObservableObject {
             orbWindow?.alphaValue = 1
             orbWindow?.orderFrontRegardless()
         }
+        if model?.isHelpPresented == true || model?.isGuidedTourActive == true {
+            synchronizeOnboardingFlow(
+                isPresented: true,
+                prefersOrbShell: model?.prefersOrbShell == true || model?.isGuidedTourActive == true
+            )
+        }
+        updateOnboardingAnchor(frame: frame, on: screen)
     }
 
     private func updateOrbAppearance(count: Int) {
@@ -539,7 +617,8 @@ final class CaptureOrbController: NSObject, ObservableObject {
             count: count,
             extracting: extracting,
             preparing: preparing,
-            idle: orbMode == .idle
+            idle: orbMode == .idle,
+            recording: orbMode == .recording
         )
 
         let tip: String
@@ -557,9 +636,12 @@ final class CaptureOrbController: NSObject, ObservableObject {
         }
         orbWindow?.contentView?.toolTip = tip
         orbButton?.toolTip = tip
-        orbButton?.isEnabled = orbMode != .extracting && orbMode != .preparing
+        orbButton?.isEnabled = orbMode != .extracting
+            && orbMode != .preparing
         orbButton?.setAccessibilityLabel(tip)
     }
+
+    private var deferredIdleMenuAction: (() -> Void)?
 
     @objc private func orbClicked(_ sender: Any?) {
         switch orbMode {
@@ -577,6 +659,7 @@ final class CaptureOrbController: NSObject, ObservableObject {
 
     private func showIdleMenu() {
         guard let button = orbButton else { return }
+        deferredIdleMenuAction = nil
         let menu = NSMenu()
         menu.autoenablesItems = false
 
@@ -662,34 +745,72 @@ final class CaptureOrbController: NSObject, ObservableObject {
         quit.keyEquivalentModifierMask = [.command]
         menu.addItem(quit)
 
+        menu.delegate = self
         let point = NSPoint(x: 0, y: button.bounds.height + 2)
+        // popUp blocks until the menu dismisses. Advance the "menu opened" tour step in
+        // menuWillOpen so copy updates while the menu is still visible. Defer item actions
+        // (startRecording / sheets) until after dismiss so they don't fight menu tracking.
         menu.popUp(positioning: nil, at: point, in: button)
+
+        // Fallback if menuWillOpen never ran (e.g. popUp failed).
+        if model?.guidedTourStep == .openOrb {
+            model?.noteGuidedTourEvent(.orbMenuOpened)
+            onboardingFlow?.refresh()
+        }
+        let action = deferredIdleMenuAction
+        deferredIdleMenuAction = nil
+        action?()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard let step = model?.guidedTourStep else { return }
+        switch step {
+        case .openOrb:
+            model?.noteGuidedTourEvent(.orbMenuOpened)
+            onboardingFlow?.refresh()
+        case .startCapture:
+            onboardingFlow?.refresh()
+        default:
+            break
+        }
     }
 
     @objc private func menuStartCapture(_ sender: Any?) {
-        model?.startRecording()
+        deferredIdleMenuAction = { [weak self] in
+            self?.model?.startRecording()
+        }
     }
 
     @objc private func menuSelectModel(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let option = model?.configuredModelOptions.first(where: { $0.id == id }) else { return }
-        model?.selectConfiguredModel(option)
+        guard let id = sender.representedObject as? String else { return }
+        deferredIdleMenuAction = { [weak self] in
+            guard let option = self?.model?.configuredModelOptions.first(where: { $0.id == id }) else { return }
+            self?.model?.selectConfiguredModel(option)
+        }
     }
 
     @objc private func menuCaptureSettings(_ sender: Any?) {
-        model?.isCaptureSettingsPresented = true
+        deferredIdleMenuAction = { [weak self] in
+            self?.model?.isCaptureSettingsPresented = true
+        }
     }
 
     @objc private func menuModelSettings(_ sender: Any?) {
-        model?.isModelSettingsPresented = true
+        deferredIdleMenuAction = { [weak self] in
+            self?.model?.isModelSettingsPresented = true
+        }
     }
 
     @objc private func menuHelp(_ sender: Any?) {
-        model?.isHelpPresented = true
+        deferredIdleMenuAction = { [weak self] in
+            self?.model?.beginGuidedTour()
+        }
     }
 
     @objc private func menuDebug(_ sender: Any?) {
-        model?.isDebugAssistantPresented = true
+        deferredIdleMenuAction = { [weak self] in
+            self?.model?.isDebugAssistantPresented = true
+        }
     }
 
     private func hideMainWindow() {
@@ -703,8 +824,7 @@ final class CaptureOrbController: NSObject, ObservableObject {
             if boundMainWindow == nil {
                 boundMainWindow = window
             }
-            savedMainOrigin = window.frame.origin
-            savedScreen = window.screen ?? NSScreen.main
+            savedScreen = connectedScreen(window.screen) ?? presentationScreen(for: window)
             window.alphaValue = 0
             window.orderOut(nil)
             window.alphaValue = 1
@@ -715,15 +835,21 @@ final class CaptureOrbController: NSObject, ObservableObject {
         guard let window = sopshotWindow() else { return }
         let frame = windowFrame(
             forContentSize: contentSize,
-            on: savedScreen ?? window.screen ?? NSScreen.main,
-            preferredOrigin: savedMainOrigin,
+            on: presentationScreen(for: window, preferred: savedScreen),
             using: window
         )
-        window.alphaValue = 0
-        window.setFrame(frame, display: true)
+        let wasVisible = window.isVisible
+        let sizeChanged = abs(window.frame.width - frame.width) > 1
+            || abs(window.frame.height - frame.height) > 1
+        if !wasVisible || sizeChanged {
+            window.setFrame(frame, display: true)
+        }
+        if animated && !wasVisible {
+            window.alphaValue = 0
+        }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        if animated {
+        if animated && !wasVisible {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.2
                 window.animator().alphaValue = 1
@@ -731,9 +857,12 @@ final class CaptureOrbController: NSObject, ObservableObject {
         } else {
             window.alphaValue = 1
         }
+        savedScreen = nil
     }
 
     private func tearDownOrb(animated: Bool) {
+        onboardingFlow?.stop()
+        onboardingFlow = nil
         let panel = orbWindow
         orbWindow = nil
         orbButton = nil
@@ -793,7 +922,6 @@ final class CaptureOrbController: NSObject, ObservableObject {
     private func windowFrame(
         forContentSize contentSize: NSSize,
         on screen: NSScreen?,
-        preferredOrigin: NSPoint?,
         using window: NSWindow?
     ) -> NSRect {
         let contentRect = NSRect(origin: .zero, size: contentSize)
@@ -804,21 +932,82 @@ final class CaptureOrbController: NSObject, ObservableObject {
             frame = NSRect(x: 0, y: 0, width: contentSize.width, height: contentSize.height + 28)
         }
 
-        let visible = (screen ?? NSScreen.main ?? NSScreen.screens[0]).visibleFrame
-        if let preferredOrigin {
-            frame.origin = preferredOrigin
-        } else {
-            frame.origin = NSPoint(
-                x: visible.midX - frame.width / 2,
-                y: visible.midY - frame.height / 2
-            )
+        let visible = screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? NSScreen.screens.first?.visibleFrame
+            ?? NSRect(origin: .zero, size: contentSize)
+        frame.origin = NSPoint(
+            x: visible.midX - frame.width / 2,
+            y: visible.midY - frame.height / 2
+        )
+        frame.origin.x = min(max(frame.origin.x, visible.minX), max(visible.minX, visible.maxX - frame.width))
+        frame.origin.y = min(max(frame.origin.y, visible.minY), max(visible.minY, visible.maxY - frame.height))
+        return frame
+    }
+
+    private func centerWindow(_ window: NSWindow, on screen: NSScreen?, contentSize: NSSize? = nil) {
+        let measuredSize = contentSize
+            ?? window.contentView?.bounds.size
+            ?? window.contentLayoutRect.size
+        let size = measuredSize.width > 0 && measuredSize.height > 0
+            ? measuredSize
+            : window.frame.size
+        let frame = windowFrame(forContentSize: size, on: screen, using: window)
+        window.setFrame(frame, display: false)
+    }
+
+    private func presentationScreen(for window: NSWindow?, preferred: NSScreen? = nil) -> NSScreen? {
+        if let screen = connectedScreen(preferred) {
+            return screen
         }
 
-        if frame.maxX > visible.maxX { frame.origin.x = visible.maxX - frame.width }
-        if frame.maxY > visible.maxY { frame.origin.y = visible.maxY - frame.height }
-        if frame.minX < visible.minX { frame.origin.x = visible.minX }
-        if frame.minY < visible.minY { frame.origin.y = visible.minY }
-        return frame
+        if let mainWindow = sopshotWindow(), mainWindow.isVisible,
+           let screen = connectedScreen(mainWindow.screen) {
+            return screen
+        }
+
+        if let window, window.isVisible, let screen = connectedScreen(window.screen) {
+            return screen
+        }
+
+        if let screen = connectedScreen(orbWindow?.screen) {
+            return screen
+        }
+
+        let mouseLocation = NSEvent.mouseLocation
+        if let screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) {
+            return screen
+        }
+
+        if let window, !window.isVisible, window.frame.origin != .zero,
+           let screen = connectedScreen(window.screen) {
+            return screen
+        }
+
+        if let screen = connectedScreen(savedScreen) {
+            return screen
+        }
+        if let screen = connectedScreen(window?.screen) {
+            return screen
+        }
+        if let screen = connectedScreen(NSApp.keyWindow?.screen) {
+            return screen
+        }
+        if let screen = connectedScreen(NSApp.mainWindow?.screen) {
+            return screen
+        }
+        return NSScreen.main ?? NSScreen.screens.first
+    }
+
+    private func connectedScreen(_ candidate: NSScreen?) -> NSScreen? {
+        guard let candidate else { return nil }
+        let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
+        if let number = candidate.deviceDescription[screenNumberKey] as? NSNumber {
+            return NSScreen.screens.first {
+                ($0.deviceDescription[screenNumberKey] as? NSNumber) == number
+            }
+        }
+        return NSScreen.screens.first(where: { $0 === candidate })
     }
 
     private func sopshotWindow() -> NSWindow? {
@@ -848,6 +1037,58 @@ final class CaptureOrbController: NSObject, ObservableObject {
     private func defaultOrbFrame() -> NSRect {
         orbFrame(for: NSScreen.main)
     }
+
+    private func resizeVisibleOrb() {
+        guard let window = orbWindow, let button = orbButton else { return }
+        let oldFrame = window.frame
+        let diameter = orbSize
+        let screen = screen(forOrbFrame: oldFrame)
+        var frame = NSRect(
+            x: oldFrame.midX - diameter / 2,
+            y: oldFrame.midY - diameter / 2,
+            width: diameter,
+            height: diameter
+        )
+        frame = boundedOrbFrame(frame, on: screen)
+        window.setFrame(frame, display: true)
+        button.setOrbDiameter(diameter)
+        lastOrbFrame = frame
+        lastOrbScreen = screen
+        updateOnboardingAnchor(frame: frame, on: screen)
+    }
+
+    private func moveOrb(to origin: NSPoint, followsPointer: Bool) {
+        guard let window = orbWindow else { return }
+        let pointer = NSEvent.mouseLocation
+        let pointerScreen = followsPointer
+            ? NSScreen.screens.first(where: { $0.frame.contains(pointer) })
+            : nil
+        let screen = pointerScreen
+            ?? connectedScreen(window.screen)
+            ?? NSScreen.main
+        var frame = window.frame
+        frame.origin = origin
+        frame = boundedOrbFrame(frame, on: screen)
+        window.setFrame(frame, display: true)
+        lastOrbFrame = frame
+        lastOrbScreen = screen
+        updateOnboardingAnchor(frame: frame, on: screen)
+    }
+
+    private func screen(forOrbFrame frame: NSRect) -> NSScreen? {
+        let center = NSPoint(x: frame.midX, y: frame.midY)
+        return NSScreen.screens.first(where: { $0.frame.contains(center) })
+            ?? connectedScreen(lastOrbScreen)
+            ?? presentationScreen(for: orbWindow)
+    }
+
+    private func boundedOrbFrame(_ frame: NSRect, on screen: NSScreen?) -> NSRect {
+        guard let visible = screen?.visibleFrame else { return frame }
+        var frame = frame
+        frame.origin.x = min(max(frame.origin.x, visible.minX), max(visible.minX, visible.maxX - frame.width))
+        frame.origin.y = min(max(frame.origin.y, visible.minY), max(visible.minY, visible.maxY - frame.height))
+        return frame
+    }
 }
 
 extension CaptureOrbController: NSWindowDelegate {
@@ -865,16 +1106,26 @@ private final class CaptureOrbButton: NSButton {
     private var extracting = false
     private var preparing = false
     private var idle = true
+    private var recording = false
+    var onMove: ((NSPoint, Bool) -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         isBordered = false
         title = ""
         imagePosition = .imageOnly
-        focusRingType = .none
+        focusRingType = .default
         wantsLayer = true
         layer?.cornerRadius = frameRect.width / 2
         layer?.masksToBounds = true
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    func setOrbDiameter(_ diameter: CGFloat) {
+        setFrameSize(NSSize(width: diameter, height: diameter))
+        layer?.cornerRadius = diameter / 2
+        needsDisplay = true
     }
 
     @available(*, unavailable)
@@ -882,18 +1133,79 @@ private final class CaptureOrbButton: NSButton {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func apply(count: Int, extracting: Bool, preparing: Bool, idle: Bool) {
+    func apply(count: Int, extracting: Bool, preparing: Bool, idle: Bool, recording: Bool) {
         self.count = count
         self.extracting = extracting
         self.preparing = preparing
         self.idle = idle
+        self.recording = recording
         needsDisplay = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        let startFrame = window.frame
+        let startPoint = window.convertPoint(toScreen: event.locationInWindow)
+        var didDrag = false
+
+        while let nextEvent = NSApp.nextEvent(
+            matching: [.leftMouseDragged, .leftMouseUp],
+            until: .distantFuture,
+            inMode: .eventTracking,
+            dequeue: true
+        ) {
+            let currentPoint = window.convertPoint(toScreen: nextEvent.locationInWindow)
+            let delta = NSPoint(x: currentPoint.x - startPoint.x, y: currentPoint.y - startPoint.y)
+            if !didDrag, hypot(delta.x, delta.y) >= 4 {
+                didDrag = true
+            }
+
+            if didDrag {
+                onMove?(
+                    NSPoint(x: startFrame.origin.x + delta.x, y: startFrame.origin.y + delta.y),
+                    true
+                )
+            }
+
+            if nextEvent.type == .leftMouseUp {
+                break
+            }
+        }
+
+        if !didDrag, isEnabled, let action {
+            sendAction(action, to: target)
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let distance: CGFloat = event.modifierFlags.contains(.shift) ? 24 : 8
+        let origin: NSPoint
+        switch event.keyCode {
+        case 123:
+            origin = NSPoint(x: (window?.frame.origin.x ?? 0) - distance, y: window?.frame.origin.y ?? 0)
+        case 124:
+            origin = NSPoint(x: (window?.frame.origin.x ?? 0) + distance, y: window?.frame.origin.y ?? 0)
+        case 125:
+            origin = NSPoint(x: window?.frame.origin.x ?? 0, y: (window?.frame.origin.y ?? 0) - distance)
+        case 126:
+            origin = NSPoint(x: window?.frame.origin.x ?? 0, y: (window?.frame.origin.y ?? 0) + distance)
+        default:
+            super.keyDown(with: event)
+            return
+        }
+        onMove?(origin, false)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         let bounds = self.bounds
         let fill: NSColor
-        if extracting || preparing {
+        if recording {
+            fill = NSColor.systemRed
+        } else if extracting || preparing {
             fill = NSColor.systemOrange.withAlphaComponent(0.72)
         } else {
             fill = NSColor.systemOrange
@@ -914,10 +1226,10 @@ private final class CaptureOrbButton: NSButton {
         } else if extracting {
             text = "…"
             font = NSFont.systemFont(ofSize: 22, weight: .bold)
+        } else if recording && count == 0 {
+            drawStopMark(in: bounds)
+            return
         } else if idle {
-            text = "▣"
-            font = NSFont.systemFont(ofSize: 15, weight: .semibold)
-        } else if count == 0 {
             text = "▣"
             font = NSFont.systemFont(ofSize: 15, weight: .semibold)
         } else {
@@ -935,5 +1247,21 @@ private final class CaptureOrbButton: NSButton {
             y: (bounds.height - size.height) / 2 - 0.5
         )
         text.draw(at: point, withAttributes: attributes)
+    }
+
+    private func drawStopMark(in bounds: NSRect) {
+        let side = min(bounds.width * 0.28, 13)
+        let mark = NSBezierPath(
+            roundedRect: NSRect(
+                x: (bounds.width - side) / 2,
+                y: (bounds.height - side) / 2,
+                width: side,
+                height: side
+            ),
+            xRadius: 2,
+            yRadius: 2
+        )
+        NSColor.white.setFill()
+        mark.fill()
     }
 }

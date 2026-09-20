@@ -32,6 +32,7 @@ struct SOPShotApp: App {
                         Button(destination.title) {
                             model.jumpToDebug(destination)
                         }
+                        .disabled(model.isHelpPresented)
                     }
                 }
             }
@@ -51,7 +52,10 @@ struct SOPShotApp: App {
                                 : "开始截图"
                         )
                 }
-                .disabled(model.phase == .preparing || model.phase == .extracting || model.phase == .processing)
+                .disabled(model.isHelpPresented
+                    || model.phase == .preparing
+                    || model.phase == .extracting
+                    || model.phase == .processing)
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             }
         }
