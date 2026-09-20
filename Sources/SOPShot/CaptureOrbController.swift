@@ -139,18 +139,20 @@ final class CaptureOrbController: NSObject, ObservableObject, NSMenuDelegate {
             forName: NSWindow.didBecomeKeyNotification,
             object: nil,
             queue: .main
-        ) { [weak self] notification in
-            Task { @MainActor in
-                self?.handleWindowBecameVisible(notification.object as? NSWindow)
+        ) { notification in
+            let window = notification.object as? NSWindow
+            Task { @MainActor [weak self] in
+                self?.handleWindowBecameVisible(window)
             }
         })
         windowWatchers.append(center.addObserver(
             forName: NSWindow.didBecomeMainNotification,
             object: nil,
             queue: .main
-        ) { [weak self] notification in
-            Task { @MainActor in
-                self?.handleWindowBecameVisible(notification.object as? NSWindow)
+        ) { notification in
+            let window = notification.object as? NSWindow
+            Task { @MainActor [weak self] in
+                self?.handleWindowBecameVisible(window)
             }
         })
 
