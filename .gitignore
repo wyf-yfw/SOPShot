@@ -1,0 +1,21 @@
+# Swift / SPM
+.build/
+.swiftpm/
+Package.resolved
+
+# App bundle & debug symbols
+SOPShot.app/
+*.dSYM/
+*.product/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Accidental codesign dump
+:-
+
+# Xcode / local
+xcuserdata/
+*.xcuserstate
+DerivedData/
