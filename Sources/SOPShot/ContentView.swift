@@ -106,7 +106,11 @@ struct ContentView: View {
                 .environmentObject(model)
         }
         .sheet(isPresented: Binding(
-            get: { model.isHelpPresented && !model.prefersOrbShell },
+            get: {
+                model.isHelpPresented
+                    && !model.prefersOrbShell
+                    && model.guidedTourStep == .openOrb
+            },
             set: {
                 if !$0 {
                     model.dismissOnboarding()
