@@ -48,6 +48,30 @@ enum CapturePhase: Equatable {
     }
 }
 
+enum CaptureOrbSize: String, CaseIterable, Identifiable, Hashable {
+    case small
+    case medium
+    case large
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .small: return "小"
+        case .medium: return "中"
+        case .large: return "大"
+        }
+    }
+
+    var diameter: CGFloat {
+        switch self {
+        case .small: return 36
+        case .medium: return 44
+        case .large: return 54
+        }
+    }
+}
+
 enum DebugDestination: String, CaseIterable, Identifiable {
     case emptyStart
     case preparing
@@ -58,6 +82,7 @@ enum DebugDestination: String, CaseIterable, Identifiable {
     case result
     case editor
     case modelSettings
+    case captureSettings
 
     var id: String { rawValue }
 
@@ -72,6 +97,7 @@ enum DebugDestination: String, CaseIterable, Identifiable {
         case .result: return "最终预览"
         case .editor: return "编辑工作台"
         case .modelSettings: return "模型设置"
+        case .captureSettings: return "截图设置"
         }
     }
 
@@ -86,6 +112,7 @@ enum DebugDestination: String, CaseIterable, Identifiable {
         case .result: return "报销单演示说明"
         case .editor: return "在演示说明上进入编辑"
         case .modelSettings: return "弹出模型设置表单"
+        case .captureSettings: return "弹出截图触发设置"
         }
     }
 
@@ -93,7 +120,7 @@ enum DebugDestination: String, CaseIterable, Identifiable {
         switch self {
         case .preparing, .recording, .extracting, .processing, .preview:
             return true
-        case .emptyStart, .result, .editor, .modelSettings:
+        case .emptyStart, .result, .editor, .modelSettings, .captureSettings:
             return false
         }
     }
@@ -101,6 +128,7 @@ enum DebugDestination: String, CaseIterable, Identifiable {
 
 enum PendingConfirmation: Identifiable, Equatable {
     case restartPreview
+    case closePreview
     case deleteStep
     case clearDraft
     case loadDemo
@@ -108,6 +136,7 @@ enum PendingConfirmation: Identifiable, Equatable {
     var id: String {
         switch self {
         case .restartPreview: return "restartPreview"
+        case .closePreview: return "closePreview"
         case .deleteStep: return "deleteStep"
         case .clearDraft: return "clearDraft"
         case .loadDemo: return "loadDemo"
@@ -117,6 +146,7 @@ enum PendingConfirmation: Identifiable, Equatable {
     var title: String {
         switch self {
         case .restartPreview: return "放弃这次操作采集并重新开始？"
+        case .closePreview: return "关闭并放弃本次采集？"
         case .deleteStep: return "删除当前步骤？"
         case .clearDraft: return "清空当前草稿？"
         case .loadDemo: return "载入演示草稿？"
@@ -126,6 +156,7 @@ enum PendingConfirmation: Identifiable, Equatable {
     var message: String {
         switch self {
         case .restartPreview: return "当前已经采集的操作截图都会被删除。"
+        case .closePreview: return "确认后将丢弃本次采集的截图和补充说明，并回到悬浮球。这些内容不会保存，也无法恢复。"
         case .deleteStep: return "这只会从当前草稿中移除这一步。"
         case .clearDraft: return "这只会清除当前窗口中的草稿内容。"
         case .loadDemo: return "这会替换当前窗口中的草稿内容。"
@@ -135,6 +166,7 @@ enum PendingConfirmation: Identifiable, Equatable {
     var confirmTitle: String {
         switch self {
         case .restartPreview: return "重新采集"
+        case .closePreview: return "关闭并丢弃"
         case .deleteStep: return "删除"
         case .clearDraft: return "清空"
         case .loadDemo: return "载入"
@@ -143,7 +175,7 @@ enum PendingConfirmation: Identifiable, Equatable {
 
     var isDestructive: Bool {
         switch self {
-        case .restartPreview, .deleteStep, .clearDraft:
+        case .restartPreview, .closePreview, .deleteStep, .clearDraft:
             return true
         case .loadDemo:
             return false
@@ -162,6 +194,98 @@ struct SOPBanner: Identifiable {
     let id = UUID()
     let text: String
     let tone: BannerTone
+}
+
+@MainActor
+enum GuidedTourStep: Int, CaseIterable, Equatable {
+    case openOrb
+    case pickModel
+    case startCapture
+    case stopCapture
+    case deleteScreenshot
+    case generate
+    case exportMarkdown
+    case finished
+
+    var title: String {
+        switch self {
+        case .openOrb: return "软件使用  1/7"
+        case .pickModel: return "软件使用  2/7"
+        case .startCapture: return "软件使用  3/7"
+        case .stopCapture: return "软件使用  4/7"
+        case .deleteScreenshot: return "软件使用  5/7"
+        case .generate: return "软件使用  6/7"
+        case .exportMarkdown: return "软件使用  7/7"
+        case .finished: return "软件使用  完成"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .openOrb:
+            return "点击左上角悬浮球打开菜单。引导会用真实界面操作，截图和说明都来自演示数据。"
+        case .pickModel:
+            return "在菜单里点「选择模型」并选一个模型。若还没有配置，引导会提供一个演示模型。"
+        case .startCapture:
+            return "选择模型后菜单会关闭。再点悬浮球打开菜单，然后点「开始截图」进入演示采集。"
+        case .stopCapture:
+            return "演示采集进行中。点击悬浮球结束截图，会打开真实的检查页并载入演示画面。"
+        case .deleteScreenshot:
+            return "在检查页删除一张不需要的截图，确认后点「开始生成说明」。"
+        case .generate:
+            return "点「开始生成说明」。引导不会访问网络，会直接载入演示说明稿。"
+        case .exportMarkdown:
+            return "在结果页导出 Markdown。这会真正弹出保存面板，写入的是演示内容。"
+        case .finished:
+            return "引导已完成。之后可以从悬浮球直接开始真实截图。"
+        }
+    }
+}
+
+enum GuidedTourEvent: Equatable {
+    case orbMenuOpened
+    case modelSelected
+    case modelSettingsSaved
+    case captureStarted
+    case captureStopped
+    case previewFrameDeleted
+    case generateFinished
+    case exported
+}
+
+/// Actions that can be gated while the guided tour is active.
+enum GuidedTourAction: Equatable {
+    case openOrbMenu
+    case selectModel
+    case openModelSettings
+    case startCapture
+    case stopCapture
+    case deletePreviewFrame
+    case startGenerate
+    case exportMarkdown
+}
+
+extension GuidedTourStep {
+    func allows(_ action: GuidedTourAction) -> Bool {
+        switch self {
+        case .openOrb:
+            return action == .openOrbMenu
+        case .pickModel:
+            return action == .openOrbMenu || action == .selectModel
+        case .startCapture:
+            return action == .openOrbMenu || action == .startCapture
+        case .stopCapture:
+            return action == .stopCapture
+        case .deleteScreenshot:
+            return action == .deletePreviewFrame
+        case .generate:
+            return action == .startGenerate
+        case .exportMarkdown:
+            return action == .exportMarkdown
+        case .finished:
+            return false
+        }
+    }
 }
 
 @MainActor
@@ -185,8 +309,12 @@ final class SOPModel: ObservableObject {
     @Published var isAPIKeyLoading = false
     @Published var modelTestState: ModelTestState = .idle
     @Published var isModelSettingsPresented = false
+    @Published var isCaptureSettingsPresented = false
     @Published var isDebugAssistantPresented = false
-    /// When true, capture UI is a debug preview and must not hide the window or install the live status item.
+    @Published var isHelpPresented = false
+    /// Active guided tour step; `nil` means tour is not running.
+    @Published var guidedTourStep: GuidedTourStep?
+    /// When true, capture UI is a debug preview and must not hide the window or show the capture orb.
     @Published var isDebugSession = false
     @Published var pendingConfirmation: PendingConfirmation?
     @Published var configuredModelOptions: [ConfiguredModelOption] = []
@@ -197,11 +325,26 @@ final class SOPModel: ObservableObject {
     @Published var previewInputMonitoringAvailable = false
     @Published var inputMonitoringAvailable = false
     @Published var isInputMonitoringPermissionAlertPresented = false
+    @Published var screenshotTriggers: ScreenshotTriggerPolicy
+    @Published var captureOrbSize: CaptureOrbSize {
+        didSet {
+            UserDefaults.standard.set(captureOrbSize.rawValue, forKey: Self.captureOrbSizeKey)
+        }
+    }
+
+    var prefersOrbShell: Bool {
+        phase == .idle && steps.isEmpty && !isEditing && !isDebugSession
+    }
+
+    var isGuidedTourActive: Bool {
+        guidedTourStep != nil
+    }
 
     private let screenshotSession = ClickScreenshotSession()
     private let interactionRecorder = InteractionRecorder()
     private let apiKeyStore = APIKeyStore()
     private var recordingConfiguration: ModelAPIConfiguration?
+    private var recordingTriggerPolicy: ScreenshotTriggerPolicy = .default
     private var pendingInputEvents: [InputTimelineEvent] = []
     private var pendingConfiguration: ModelAPIConfiguration?
     private var recordingInputMonitoringAvailable = false
@@ -227,6 +370,9 @@ final class SOPModel: ObservableObject {
         modelProvider = storedProvider
         modelInputMode = initialInputMode
         modelName = initialModel
+        screenshotTriggers = Self.loadScreenshotTriggers()
+        captureOrbSize = UserDefaults.standard.string(forKey: Self.captureOrbSizeKey)
+            .flatMap(CaptureOrbSize.init(rawValue:)) ?? .large
         let providerEndpointKey = "sopshot.model.\(storedProvider.rawValue).endpoint"
         modelEndpoint = UserDefaults.standard.string(forKey: providerEndpointKey)
             ?? (storedProvider == .customOpenAICompatible
@@ -409,6 +555,7 @@ final class SOPModel: ObservableObject {
 
     func selectConfiguredModel(_ option: ConfiguredModelOption) {
         guard phase == .idle else { return }
+        guard allowsGuidedTourAction(.selectModel) else { return }
 
         modelProvider = option.provider
         modelInputMode = option.provider.defaultInputMode
@@ -438,11 +585,94 @@ final class SOPModel: ObservableObject {
         UserDefaults.standard.set(modelEndpoint, forKey: "sopshot.model.\(option.provider.rawValue).endpoint")
         modelTestState = .idle
         rebuildConfiguredModelOptions()
+        noteGuidedTourEvent(.modelSelected)
     }
 
     func selectModelPreset(_ preset: ModelPreset) {
         modelName = preset.id
         modelTestState = .idle
+    }
+
+    func beginGuidedTour() {
+        guidedTourStep = .openOrb
+        isHelpPresented = true
+        banner = nil
+    }
+
+    func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: "sopshot.onboarding.completed")
+        endGuidedTourSession()
+    }
+
+    func dismissOnboarding() {
+        endGuidedTourSession()
+    }
+
+    /// Clears tour UI and demo session state so the app returns to the idle orb.
+    private func endGuidedTourSession() {
+        let wasTouring = guidedTourStep != nil || isHelpPresented
+        guidedTourStep = nil
+        isHelpPresented = false
+        guard wasTouring else { return }
+
+        abandonLiveCaptureIfNeeded()
+        interactionRecorder.onCaptureEvent = nil
+        screenshotSession.onQueuedCountChanged = nil
+        recordingConfiguration = nil
+        recordingStartedAt = nil
+        pendingConfirmation = nil
+        isModelSettingsPresented = false
+        isCaptureSettingsPresented = false
+        isDebugAssistantPresented = false
+        isEditing = false
+        isDebugSession = false
+        clearDraftSilently()
+        queuedScreenshotCount = 0
+        phase = .idle
+        banner = nil
+    }
+
+    func noteGuidedTourEvent(_ event: GuidedTourEvent) {
+        guard let step = guidedTourStep else { return }
+        let next: GuidedTourStep?
+        switch (step, event) {
+        case (.openOrb, .orbMenuOpened):
+            next = .pickModel
+        case (.pickModel, .modelSelected), (.pickModel, .modelSettingsSaved):
+            next = .startCapture
+        case (.startCapture, .captureStarted):
+            next = .stopCapture
+        case (.stopCapture, .captureStopped):
+            next = .deleteScreenshot
+        case (.deleteScreenshot, .previewFrameDeleted):
+            next = .generate
+        case (.generate, .generateFinished):
+            next = .exportMarkdown
+        case (.exportMarkdown, .exported):
+            next = .finished
+        default:
+            next = nil
+        }
+        guard let next else { return }
+        if next == .finished {
+            completeOnboarding()
+            return
+        }
+        guidedTourStep = next
+    }
+
+    /// When a tour is active, only the current step's allowed actions may run.
+    func allowsGuidedTourAction(_ action: GuidedTourAction) -> Bool {
+        guard let step = guidedTourStep else { return true }
+        return step.allows(action)
+    }
+
+    static let guidedTourMockModelID = "guided-tour::demo-model"
+
+    /// Advances the model-pick tour step without writing real API settings.
+    func selectGuidedTourMockModel() {
+        guard allowsGuidedTourAction(.selectModel) else { return }
+        noteGuidedTourEvent(.modelSelected)
     }
 
     func selectModelInputMode(_ mode: ModelInputMode) {
@@ -452,6 +682,9 @@ final class SOPModel: ObservableObject {
     }
 
     func saveModelSettings() {
+        if isGuidedTourActive {
+            guard guidedTourStep == .pickModel else { return }
+        }
         let cleanProvider = modelProvider
         let cleanModel = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanEndpoint = modelEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -494,9 +727,44 @@ final class SOPModel: ObservableObject {
         modelTestState = .idle
         if modelConfiguration.isConfigured {
             banner = nil
+            noteGuidedTourEvent(.modelSettingsSaved)
         } else {
             banner = SOPBanner(text: "模型设置已保存，开始截图前还需要填写 API Key。", tone: .warning)
         }
+
+    }
+
+    func saveCaptureSettings() {
+        guard screenshotTriggers.hasAnyTriggerEnabled else {
+            banner = SOPBanner(text: "请至少打开一种截图触发操作。", tone: .warning)
+            return
+        }
+        Self.persistScreenshotTriggers(screenshotTriggers)
+        isCaptureSettingsPresented = false
+        banner = nil
+    }
+
+    func setScreenshotTrigger(_ kind: InputEventKind, enabled: Bool) {
+        guard InputEventKind.configurableScreenshotTriggers.contains(kind) else { return }
+        var updated = screenshotTriggers
+        updated.setEnabled(kind, enabled)
+        screenshotTriggers = updated
+    }
+
+    private static let screenshotTriggersKey = "sopshot.capture.triggers"
+    private static let captureOrbSizeKey = "sopshot.capture.orbSize"
+
+    private static func loadScreenshotTriggers() -> ScreenshotTriggerPolicy {
+        guard let data = UserDefaults.standard.data(forKey: screenshotTriggersKey),
+              let decoded = try? JSONDecoder().decode(ScreenshotTriggerPolicy.self, from: data) else {
+            return .default
+        }
+        return decoded
+    }
+
+    private static func persistScreenshotTriggers(_ policy: ScreenshotTriggerPolicy) {
+        guard let data = try? JSONEncoder().encode(policy) else { return }
+        UserDefaults.standard.set(data, forKey: screenshotTriggersKey)
     }
 
     func testModelAPI() {
@@ -527,9 +795,21 @@ final class SOPModel: ObservableObject {
 
     func startRecording() {
         guard phase == .idle else { return }
+        guard allowsGuidedTourAction(.startCapture) else { return }
+
+        if isGuidedTourActive {
+            startGuidedTourRecording()
+            return
+        }
+
         guard modelConfiguration.isConfigured else {
             isModelSettingsPresented = true
             banner = SOPBanner(text: "开始前请先在“模型设置”中选择图像模型并填写 API Key。", tone: .warning)
+            return
+        }
+        guard screenshotTriggers.hasAnyTriggerEnabled else {
+            isCaptureSettingsPresented = true
+            banner = SOPBanner(text: "请先在“截图设置”里至少打开一种截图触发操作。", tone: .warning)
             return
         }
         isDebugSession = false
@@ -543,13 +823,17 @@ final class SOPModel: ObservableObject {
         clearPendingCapture()
         queuedScreenshotCount = 0
         let configuration = modelConfiguration
+        let triggerPolicy = screenshotTriggers
         recordingConfiguration = configuration
+        recordingTriggerPolicy = triggerPolicy
         phase = .preparing
         banner = SOPBanner(text: "正在准备截图。完成后会先预览，再发送给 \(configuration.displayName)。", tone: .info)
 
         Task { [weak self] in
             guard let self else { return }
             do {
+                screenshotSession.triggerPolicy = triggerPolicy
+                interactionRecorder.triggerPolicy = triggerPolicy
                 screenshotSession.onQueuedCountChanged = { [weak self] count in
                     self?.queuedScreenshotCount = count
                 }
@@ -567,7 +851,7 @@ final class SOPModel: ObservableObject {
                 recordingStartedAt = Date()
                 banner = SOPBanner(
                     text: hasInputPermission
-                        ? "正在按操作截图。鼠标点击、拖拽、滚动和关键按键都会保存一张画面，完成后点击“结束截图”。"
+                        ? "正在按操作截图。已启用：\(triggerPolicy.enabledSummary)。完成后点击左上角圆球结束。"
                         : "正在等待截图。当前未开启输入监控，无法识别鼠标和键盘操作；请先打开权限。",
                     tone: hasInputPermission ? .info : .warning
                 )
@@ -585,10 +869,52 @@ final class SOPModel: ObservableObject {
         }
     }
 
+    private func startGuidedTourRecording() {
+        isDebugSession = false
+        title = ""
+        audience = ""
+        summary = ""
+        aiEngineLabel = ""
+        steps = []
+        selectedStepID = nil
+        isEditing = false
+        clearPendingCapture()
+        let demo = DebugFixtureFactory.previewSession()
+        queuedScreenshotCount = demo.frames.count
+        let configuration: ModelAPIConfiguration
+        if modelConfiguration.isConfigured {
+            configuration = modelConfiguration
+        } else {
+            configuration = ModelAPIConfiguration(
+                provider: .deepSeek,
+                inputMode: .images,
+                endpoint: ModelProvider.deepSeek.defaultEndpoint,
+                model: ModelProvider.deepSeek.defaultModel,
+                apiKey: "guided-tour-mock"
+            )
+        }
+        recordingConfiguration = configuration
+        recordingTriggerPolicy = screenshotTriggers
+        recordingInputMonitoringAvailable = true
+        inputMonitoringAvailable = true
+        recordingStartedAt = Date()
+        phase = .recording
+        banner = SOPBanner(
+            text: "引导演练中：使用演示截图。点击悬浮球结束截图。",
+            tone: .info
+        )
+        noteGuidedTourEvent(.captureStarted)
+    }
+
     func stopRecording() {
         guard phase == .recording else { return }
+        guard allowsGuidedTourAction(.stopCapture) else { return }
         if isDebugSession {
             jumpToDebug(.preview)
+            return
+        }
+        if isGuidedTourActive {
+            stopGuidedTourRecording()
             return
         }
         phase = .extracting
@@ -602,7 +928,9 @@ final class SOPModel: ObservableObject {
                 let frames = await screenshotSession.finish()
                 screenshotSession.onQueuedCountChanged = nil
                 queuedScreenshotCount = frames.count
-                let captureEventCount = inputEvents.filter(\.kind.producesScreenshot).count
+                let captureEventCount = inputEvents.filter {
+                    self.recordingTriggerPolicy.producesScreenshot(for: $0.kind)
+                }.count
                 guard captureEventCount > 0 else { throw CaptureError.emptyCapture }
                 guard !frames.isEmpty else {
                     throw CaptureError.screenshotFailed(expected: captureEventCount, captured: 0)
@@ -627,9 +955,36 @@ final class SOPModel: ObservableObject {
                 phase = .idle
                 recordingStartedAt = nil
                 recordingConfiguration = nil
-                banner = SOPBanner(text: error.localizedDescription, tone: .error)
+                if let captureError = error as? CaptureError, case .emptyCapture = captureError {
+                    banner = nil
+                } else {
+                    banner = SOPBanner(text: error.localizedDescription, tone: .error)
+                }
             }
         }
+    }
+
+    private func stopGuidedTourRecording() {
+        phase = .extracting
+        banner = SOPBanner(text: "引导演练：正在载入演示截图。", tone: .info)
+        let configuration = recordingConfiguration ?? modelConfiguration
+        seedPreviewDemo(keepPending: true)
+        if modelConfiguration.isConfigured {
+            pendingConfiguration = modelConfiguration
+            previewModelLabel = modelConfiguration.displayName
+            previewInputMode = modelConfiguration.inputMode
+        } else {
+            pendingConfiguration = configuration
+        }
+        recordingStartedAt = nil
+        recordingConfiguration = nil
+        queuedScreenshotCount = previewFrames.count
+        banner = SOPBanner(
+            text: "已载入 \(previewFrames.count) 张演示截图，请检查后生成说明。",
+            tone: .info
+        )
+        phase = .preview
+        noteGuidedTourEvent(.captureStopped)
     }
 
     func startAIProcessing() {
@@ -639,9 +994,15 @@ final class SOPModel: ObservableObject {
             banner = SOPBanner(text: "当前没有可发送的截图，请重新采集。", tone: .warning)
             return
         }
+        guard allowsGuidedTourAction(.startGenerate) else { return }
 
         if isDebugSession {
             jumpToDebug(.result)
+            return
+        }
+
+        if isGuidedTourActive {
+            startGuidedTourProcessing()
             return
         }
 
@@ -662,7 +1023,8 @@ final class SOPModel: ObservableObject {
                     frames: sampledFrames,
                     configuration: currentConfiguration,
                     inputEvents: inputEvents,
-                    userNote: userNote
+                    userNote: userNote,
+                    triggerPolicy: recordingTriggerPolicy
                 )
                 let frames = sampledFrames
                 let capturedSteps = try makeSteps(from: draft, frames: frames)
@@ -686,17 +1048,46 @@ final class SOPModel: ObservableObject {
         }
     }
 
+    private func startGuidedTourProcessing() {
+        let label = pendingConfiguration?.displayName
+            ?? (modelConfiguration.isConfigured ? modelConfiguration.displayName : "演示模型")
+        phase = .processing
+        banner = SOPBanner(text: "引导演练：正在用演示数据生成说明（不会访问网络）。", tone: .info)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            guard let self, self.isGuidedTourActive, self.phase == .processing else { return }
+            self.loadDemo()
+            self.aiEngineLabel = "引导演示 · \(label)"
+            self.clearPendingCapture()
+            self.phase = .idle
+            self.banner = SOPBanner(
+                text: "已生成演示说明。接下来导出 Markdown 完成引导。",
+                tone: .success
+            )
+            self.noteGuidedTourEvent(.generateFinished)
+        }
+    }
+
     func restartFromPreview() {
         guard phase == .preview else { return }
+        guard !isGuidedTourActive else { return }
         pendingConfirmation = .restartPreview
+    }
+
+    func requestClosePreview() {
+        guard phase == .preview else { return }
+        guard !isGuidedTourActive else { return }
+        pendingConfirmation = .closePreview
     }
 
     func deleteSelected() {
         guard selectedIndex != nil else { return }
+        guard !isGuidedTourActive else { return }
         pendingConfirmation = .deleteStep
     }
 
     func clearDraft() {
+        guard !isGuidedTourActive else { return }
         guard !steps.isEmpty || !title.isEmpty || !audience.isEmpty else {
             banner = SOPBanner(text: "当前草稿已经是空的。", tone: .info)
             return
@@ -705,6 +1096,7 @@ final class SOPModel: ObservableObject {
     }
 
     func requestLoadDemo() {
+        guard !isGuidedTourActive else { return }
         if steps.isEmpty && title.isEmpty && audience.isEmpty {
             loadDemo()
             return
@@ -718,6 +1110,8 @@ final class SOPModel: ObservableObject {
         switch pendingConfirmation {
         case .restartPreview:
             performRestartFromPreview()
+        case .closePreview:
+            discardPreviewAndReturnToOrb()
         case .deleteStep:
             performDeleteSelected()
         case .clearDraft:
@@ -741,6 +1135,18 @@ final class SOPModel: ObservableObject {
         phase = .idle
         banner = nil
         startRecording()
+    }
+
+    private func discardPreviewAndReturnToOrb() {
+        guard phase == .preview else { return }
+        clearDraftSilently()
+        recordingConfiguration = nil
+        recordingStartedAt = nil
+        isEditing = false
+        isDebugSession = false
+        isHelpPresented = false
+        phase = .idle
+        banner = nil
     }
 
     private func performDeleteSelected() {
@@ -776,13 +1182,14 @@ final class SOPModel: ObservableObject {
 
     func deletePreviewFrame(at index: Int) {
         guard previewFrames.indices.contains(index) else { return }
+        guard allowsGuidedTourAction(.deletePreviewFrame) else { return }
 
         let deletedFrame = previewFrames.remove(at: index)
         if let primaryInputEventID = deletedFrame.primaryInputEvent?.id,
            let eventIndex = pendingInputEvents.firstIndex(where: { $0.id == primaryInputEventID }) {
             pendingInputEvents.remove(at: eventIndex)
         } else if let eventIndex = pendingInputEvents.indices
-            .filter({ pendingInputEvents[$0].kind.producesScreenshot })
+            .filter({ recordingTriggerPolicy.producesScreenshot(for: pendingInputEvents[$0].kind) })
             .min(by: {
                 abs(pendingInputEvents[$0].timestamp - deletedFrame.timestamp)
                     < abs(pendingInputEvents[$1].timestamp - deletedFrame.timestamp)
@@ -796,6 +1203,9 @@ final class SOPModel: ObservableObject {
                 : "已删除第 \(index + 1) 张截图，剩余 \(previewFrames.count) 张。",
             tone: .info
         )
+        if !previewFrames.isEmpty {
+            noteGuidedTourEvent(.previewFrameDeleted)
+        }
     }
 
     func previewInputEvents(for frame: CapturedFrame, radius: TimeInterval = 0.7) -> [InputTimelineEvent] {
@@ -826,7 +1236,7 @@ final class SOPModel: ObservableObject {
         timestamp: TimeInterval
     ) -> [InputTimelineEvent] {
         guard let primaryCaptureIndex = events.indices
-            .filter({ events[$0].kind.producesScreenshot })
+            .filter({ recordingTriggerPolicy.producesScreenshot(for: events[$0].kind) })
             .min(by: { lhs, rhs in
                 let leftDistance = abs(events[lhs].timestamp - timestamp)
                 let rightDistance = abs(events[rhs].timestamp - timestamp)
@@ -887,10 +1297,14 @@ final class SOPModel: ObservableObject {
     }
 
     func jumpToDebug(_ destination: DebugDestination) {
+        guard !isGuidedTourActive else { return }
         abandonLiveCaptureIfNeeded()
         isDebugSession = destination.keepsDebugSession
         isDebugAssistantPresented = false
         isModelSettingsPresented = false
+        isCaptureSettingsPresented = false
+        isHelpPresented = false
+        guidedTourStep = nil
         isEditing = false
         banner = nil
 
@@ -946,6 +1360,13 @@ final class SOPModel: ObservableObject {
                 clearDraftSilently()
             }
             isModelSettingsPresented = true
+
+        case .captureSettings:
+            phase = .idle
+            if steps.isEmpty {
+                clearDraftSilently()
+            }
+            isCaptureSettingsPresented = true
         }
     }
 
@@ -1030,6 +1451,7 @@ final class SOPModel: ObservableObject {
     }
 
     func exportHTML() {
+        guard !isGuidedTourActive else { return }
         guard !steps.isEmpty else {
             banner = SOPBanner(text: "先采集一遍电脑操作，再导出说明。", tone: .warning)
             return
@@ -1041,12 +1463,14 @@ final class SOPModel: ObservableObject {
         do {
             try ExportService.html(title: displayTitle, audience: audience, steps: steps).write(to: url, atomically: true, encoding: .utf8)
             banner = SOPBanner(text: "HTML 已导出。", tone: .success)
+            noteGuidedTourEvent(.exported)
         } catch {
             banner = SOPBanner(text: "HTML 导出失败：\(error.localizedDescription)", tone: .error)
         }
     }
 
     func exportMarkdown() {
+        guard allowsGuidedTourAction(.exportMarkdown) else { return }
         guard !steps.isEmpty else {
             banner = SOPBanner(text: "先采集一遍电脑操作，再导出说明。", tone: .warning)
             return
@@ -1058,6 +1482,7 @@ final class SOPModel: ObservableObject {
         do {
             try ExportService.markdown(title: displayTitle, audience: audience, steps: steps).write(to: url, atomically: true, encoding: .utf8)
             banner = SOPBanner(text: "Markdown 已导出。", tone: .success)
+            noteGuidedTourEvent(.exported)
         } catch {
             banner = SOPBanner(text: "Markdown 导出失败：\(error.localizedDescription)", tone: .error)
         }

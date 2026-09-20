@@ -14,7 +14,6 @@ extension Color {
 struct ContentView: View {
     @EnvironmentObject private var model: SOPModel
     @AppStorage("sopshot.onboarding.completed") private var onboardingCompleted = false
-    @State private var isOnboardingPresented = false
 
     var body: some View {
         Group {
@@ -23,7 +22,10 @@ struct ContentView: View {
             } else if model.phase != .idle {
                 CaptureView()
             } else if model.steps.isEmpty {
-                EmptyStartView()
+                // Idle shell is the floating orb; keep a minimal host for sheets/alerts.
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(WindowSizeView(targetContentSize: NSSize(width: 400, height: 210)))
             } else if model.isEditing {
                 EditorWorkspaceView()
             } else {
@@ -39,58 +41,95 @@ struct ContentView: View {
         }
         .onAppear {
             if !onboardingCompleted {
-                isOnboardingPresented = true
+                model.beginGuidedTour()
             }
         }
         .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    model.isDebugAssistantPresented = true
-                } label: {
-                    Label("调试助手", systemImage: "hammer")
+            if !model.steps.isEmpty || model.phase != .idle || model.isDebugSession {
+                if FeatureFlags.showsDebugAssistant {
+                    ToolbarItem(placement: .automatic) {
+                        Button {
+                            model.isDebugAssistantPresented = true
+                        } label: {
+                            Image(systemName: "hammer")
+                        }
+                        .help("跳转到任意页面，不必走完整流程")
+                        .accessibilityLabel("调试助手")
+                        .disabled(model.isGuidedTourActive)
+                    }
                 }
-                .help("跳转到任意页面，不必走完整流程")
-            }
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    model.isModelSettingsPresented = true
-                } label: {
-                    Label("模型设置", systemImage: "slider.horizontal.3")
+                ToolbarItem(placement: .automatic) {
+                    Menu {
+                        Button("截图设置…") {
+                            model.isCaptureSettingsPresented = true
+                        }
+                        .disabled(
+                            model.isGuidedTourActive
+                                || (model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        )
+                        Button("模型设置…") {
+                            model.isModelSettingsPresented = true
+                        }
+                        .disabled(
+                            model.isGuidedTourActive
+                                || (model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        )
+                        Divider()
+                        Button("使用说明…") {
+                            model.beginGuidedTour()
+                        }
+                        .disabled(
+                            model.isGuidedTourActive
+                                || (model.phase != .idle && model.phase != .preview && !model.isDebugSession)
+                        )
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .help("截图触发、模型配置与使用说明")
+                    .accessibilityLabel("设置")
+                    .disabled(model.isGuidedTourActive)
                 }
-                .help("配置你自己的多模态模型 API")
-                .disabled(model.phase != .idle && model.phase != .preview && !model.isDebugSession)
-            }
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    isOnboardingPresented = true
-                } label: {
-                    Image(systemName: "questionmark.circle")
-                }
-                .help("查看使用说明")
-                .accessibilityLabel("使用说明")
-                .disabled(model.phase != .idle && model.phase != .preview && !model.isDebugSession)
             }
         }
-        .sheet(isPresented: $model.isModelSettingsPresented) {
+        .sheet(isPresented: Binding(
+            get: { model.isModelSettingsPresented && !model.prefersOrbShell },
+            set: {
+                model.isModelSettingsPresented = $0
+            }
+        )) {
             ModelSettingsView()
                 .environmentObject(model)
         }
-        .sheet(isPresented: $model.isDebugAssistantPresented) {
+        .sheet(isPresented: Binding(
+            get: { model.isCaptureSettingsPresented && !model.prefersOrbShell },
+            set: {
+                model.isCaptureSettingsPresented = $0
+            }
+        )) {
+            CaptureSettingsView()
+                .environmentObject(model)
+        }
+        .sheet(isPresented: Binding(
+            get: { FeatureFlags.showsDebugAssistant && model.isDebugAssistantPresented && !model.prefersOrbShell },
+            set: { model.isDebugAssistantPresented = $0 }
+        )) {
             DebugAssistantView()
                 .environmentObject(model)
         }
-        .sheet(isPresented: $isOnboardingPresented) {
-            OnboardingView(
-                onLoadDemo: {
-                    finishOnboarding()
-                    DispatchQueue.main.async {
-                        model.loadDemo()
-                    }
-                },
-                onDismiss: {
-                    finishOnboarding()
+        .sheet(isPresented: Binding(
+            get: {
+                model.isHelpPresented
+                    && !model.prefersOrbShell
+                    && model.guidedTourStep == .openOrb
+            },
+            set: {
+                if !$0 {
+                    model.dismissOnboarding()
                 }
-            )
+            }
+        )) {
+            OnboardingUnavailableView()
+                .environmentObject(model)
         }
         .alert("需要输入监控权限", isPresented: $model.isInputMonitoringPermissionAlertPresented) {
             Button("打开系统设置") {
@@ -119,10 +158,6 @@ struct ContentView: View {
         }
     }
 
-    private func finishOnboarding() {
-        onboardingCompleted = true
-        isOnboardingPresented = false
-    }
 }
 
 struct DebugAssistantView: View {
@@ -131,7 +166,7 @@ struct DebugAssistantView: View {
     private let destinations: [(String, [DebugDestination])] = [
         ("开始与截图", [.emptyStart, .preparing, .recording, .extracting]),
         ("预览与结果", [.preview, .processing, .result, .editor]),
-        ("设置", [.modelSettings])
+        ("设置", [.modelSettings, .captureSettings])
     ]
 
     var body: some View {
@@ -311,7 +346,7 @@ struct ModelSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("只显示支持图像输入的模型。结束截图后会先预览画面，确认后才会发送。")
                 Text("测试会发送一张内置演示画面。API Key 保存在本机应用配置中，不写入苹果钥匙串。")
-            Text(isCustomProvider ? "接口地址和模型选择会保存在本机。" : "预制厂商的接口地址已内置，模型选择会保存在本机。")
+                Text(isCustomProvider ? "接口地址和模型选择会保存在本机。" : "预制厂商的接口地址已内置，模型选择会保存在本机。")
             }
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
@@ -344,7 +379,7 @@ struct ModelSettingsView: View {
             .padding(.top, 18)
         }
         .padding(28)
-        .frame(width: 640, height: 540)
+        .frame(width: 640, height: 480)
     }
 
     private var isTesting: Bool {
@@ -378,6 +413,78 @@ struct ModelSettingsView: View {
                 .foregroundStyle(Color.sopDanger)
                 .lineLimit(2)
         }
+    }
+}
+
+struct CaptureSettingsView: View {
+    @EnvironmentObject private var model: SOPModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("截图设置")
+                        .font(.system(size: 24, weight: .bold))
+                    Text("选择哪些操作会触发截图。普通打字始终不会截图。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("悬浮球大小")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Picker("悬浮球大小", selection: $model.captureOrbSize) {
+                        ForEach(CaptureOrbSize.allCases) { size in
+                            Text(size.title).tag(size)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 142)
+                }
+            }
+
+            Divider()
+                .padding(.vertical, 22)
+
+            Form {
+                Section {
+                    ForEach(InputEventKind.configurableScreenshotTriggers) { kind in
+                        Toggle(
+                            isOn: Binding(
+                                get: { model.screenshotTriggers.isEnabled(kind) },
+                                set: { model.setScreenshotTrigger(kind, enabled: $0) }
+                            )
+                        ) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(kind.promptLabel)
+                                Text(kind.settingsDetail)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("触发操作")
+                } footer: {
+                    Text("关闭后对应操作不再截图。至少保留一种触发，才能开始截图。")
+                }
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                Spacer()
+                Button("保存并关闭") {
+                    model.saveCaptureSettings()
+                }
+                .buttonStyle(SOPDarkButtonStyle())
+                .disabled(!model.screenshotTriggers.hasAnyTriggerEnabled)
+            }
+            .padding(.top, 18)
+        }
+        .padding(28)
+        .frame(width: 520, height: 520)
     }
 }
 
@@ -551,10 +658,13 @@ struct CaptureFramePreviewView: View {
                             model.restartFromPreview()
                         }
                         .buttonStyle(SOPQuietButtonStyle())
+                        .disabled(model.isGuidedTourActive)
                         Button("开始生成说明") {
                             model.startAIProcessing()
                         }
                         .buttonStyle(SOPFilledButtonStyle(tone: .accent))
+                        .disabled(!model.allowsGuidedTourAction(.startGenerate))
+                        .accessibilityHint("确认截图后，将画面和操作数据发送给所选模型生成说明。")
                     }
                     .padding(.horizontal, 30)
                     .padding(.top, 26)
@@ -594,6 +704,7 @@ struct CaptureFramePreviewView: View {
                                         Label("删除图片", systemImage: "trash")
                                     }
                                     .buttonStyle(SOPDangerButtonStyle())
+                                    .disabled(!model.allowsGuidedTourAction(.deletePreviewFrame))
                                 }
                             }
                             .frame(maxWidth: .infinity)
@@ -738,6 +849,7 @@ struct CaptureFramePreviewView: View {
                                 model.restartFromPreview()
                             }
                             .buttonStyle(SOPQuietButtonStyle())
+                            .disabled(model.isGuidedTourActive)
                         }
                         .frame(maxWidth: .infinity, minHeight: 360)
                     }
@@ -920,17 +1032,22 @@ struct ResultPreviewView: View {
                     model.startRecording()
                 }
                 .buttonStyle(SOPQuietButtonStyle())
+                .disabled(model.isGuidedTourActive)
                 Button("编辑结果") {
                     model.isEditing = true
                 }
                 .buttonStyle(SOPQuietButtonStyle())
+                .disabled(model.isGuidedTourActive)
                 Menu {
                     Button("导出 HTML") { model.exportHTML() }
+                        .disabled(model.isGuidedTourActive)
                     Button("导出 Markdown") { model.exportMarkdown() }
+                        .disabled(!model.allowsGuidedTourAction(.exportMarkdown))
                 } label: {
                     Text("导出")
                 }
                 .buttonStyle(SOPDarkButtonStyle())
+                .disabled(model.isGuidedTourActive && !model.allowsGuidedTourAction(.exportMarkdown))
             }
             .padding(.horizontal, 24)
             .frame(height: 70)
@@ -1080,118 +1197,83 @@ struct ModelSelectorMenu: View {
     }
 }
 
-struct OnboardingView: View {
-    let onLoadDemo: () -> Void
-    let onDismiss: () -> Void
+struct OnboardingUnavailableView: View {
+    @EnvironmentObject private var model: SOPModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 7) {
-                Text("开始使用")
-                    .font(.system(size: 24, weight: .semibold))
-                    .tracking(-0.35)
-                Text("只需要设置一次，之后每次打开都可以直接开始截图。")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-                .padding(.vertical, 24)
-
-            VStack(alignment: .leading, spacing: 20) {
-                GuideRow(
-                    number: "01",
-                    title: "设置图像模型",
-                    detail: "从右上角打开模型设置，填写你自己的 API Key。"
-                )
-                GuideRow(
-                    number: "02",
-                    title: "完成一次电脑操作",
-                    detail: "开始截图后，按平时的方式点击和操作；每次重要操作会保存一张画面。"
-                )
-                GuideRow(
-                    number: "03",
-                    title: "检查截图并生成说明",
-                    detail: "结束后先检查截图，需要时删除，再开始生成。"
-                )
-            }
-
-            Divider()
-                .padding(.top, 26)
-
-            Text("首次采集时，macOS 会请求屏幕录制和输入监控权限。")
-                .font(.system(size: 11))
+        VStack(alignment: .leading, spacing: 16) {
+            Text("软件使用引导")
+                .font(.system(size: 20, weight: .semibold))
+            Text("请先清空当前草稿并回到悬浮球，再从菜单里打开「使用说明」。引导会在真实界面上逐步提示，并用演示数据完成一次完整流程。")
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 16)
-
-            HStack(spacing: 10) {
-                Button("载入演示") {
-                    onLoadDemo()
+            HStack {
+                Spacer()
+                Button("关闭") {
+                    model.dismissOnboarding()
                 }
                 .buttonStyle(SOPQuietButtonStyle())
-
-                Spacer()
-
-                Button("知道了") {
-                    onDismiss()
-                }
-                .buttonStyle(SOPFilledButtonStyle(tone: .accent))
-            }
-            .padding(.top, 22)
-        }
-        .padding(30)
-        .frame(width: 520, height: 480)
-    }
-}
-
-private struct GuideRow: View {
-    let number: String
-    let title: String
-    let detail: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Text(number)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(Color.sopAccent)
-                .frame(width: 24, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .padding(24)
+        .frame(width: 380)
     }
 }
 
 private struct WindowSizeView: NSViewRepresentable {
+    @EnvironmentObject private var model: SOPModel
     let targetContentSize: NSSize
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         DispatchQueue.main.async {
-            Self.fit(window: view.window, targetContentSize: targetContentSize)
+            Self.fit(
+                window: view.window,
+                targetContentSize: targetContentSize,
+                locksSize: model.isGuidedTourActive
+            )
         }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
-            Self.fit(window: nsView.window, targetContentSize: targetContentSize)
+            Self.fit(
+                window: nsView.window,
+                targetContentSize: targetContentSize,
+                locksSize: model.isGuidedTourActive
+            )
         }
     }
 
-    private static func fit(window: NSWindow?, targetContentSize: NSSize) {
+    private static func fit(window: NSWindow?, targetContentSize: NSSize, locksSize: Bool) {
         guard let window else { return }
         let currentSize = window.contentLayoutRect.size
-        guard abs(currentSize.width - targetContentSize.width) > 20
-                || abs(currentSize.height - targetContentSize.height) > 20 else { return }
-        window.setContentSize(targetContentSize)
+        if abs(currentSize.width - targetContentSize.width) > 20
+            || abs(currentSize.height - targetContentSize.height) > 20
+        {
+            window.setContentSize(targetContentSize)
+        }
+        applyResizeLock(window: window, locked: locksSize)
+    }
+
+    private static func applyResizeLock(window: NSWindow, locked: Bool) {
+        if locked {
+            window.styleMask.remove(.resizable)
+            let size = window.frame.size
+            window.minSize = size
+            window.maxSize = size
+        } else {
+            if !window.styleMask.contains(.resizable) {
+                window.styleMask.insert(.resizable)
+            }
+            window.minSize = NSSize(width: 360, height: 180)
+            window.maxSize = NSSize(
+                width: CGFloat.greatestFiniteMagnitude,
+                height: CGFloat.greatestFiniteMagnitude
+            )
+        }
     }
 }
 
@@ -1447,10 +1529,13 @@ struct WorkbenchView: View {
                         .buttonStyle(SOPQuietButtonStyle())
                     Button("重新开始") { model.clearDraft() }
                         .buttonStyle(SOPQuietButtonStyle())
+                        .disabled(model.isGuidedTourActive)
                     Button("导出 HTML") { model.exportHTML() }
                         .buttonStyle(SOPDarkButtonStyle())
+                        .disabled(model.isGuidedTourActive)
                     Button("导出 Markdown") { model.exportMarkdown() }
                         .buttonStyle(SOPAccentButtonStyle())
+                        .disabled(!model.allowsGuidedTourAction(.exportMarkdown))
                 }
             }
             .padding(.horizontal, 24)

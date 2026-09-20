@@ -1,5 +1,8 @@
 import AppKit
 import CoreGraphics
+import CoreImage
+import CoreMedia
+import CoreVideo
 import ScreenCaptureKit
 
 /// Captures one screen image for every recorded click or important key action.
@@ -15,12 +18,12 @@ final class ClickScreenshotSession {
 
     private var contentFilter: SCContentFilter?
     private var screenshotConfiguration: SCStreamConfiguration?
-    private var displayID: CGDirectDisplayID?
     private var pendingCaptures: [Task<CapturedFrame?, Never>] = []
     private var isActive = false
 
     /// Fires whenever the number of queued screenshots changes during a session.
     var onQueuedCountChanged: ((Int) -> Void)?
+    var triggerPolicy: ScreenshotTriggerPolicy = .default
 
     var queuedScreenshotCount: Int {
         pendingCaptures.count + pendingGestures.count
@@ -30,7 +33,6 @@ final class ClickScreenshotSession {
         cancelPendingCaptures()
         contentFilter = nil
         screenshotConfiguration = nil
-        displayID = nil
         isActive = false
         notifyQueuedCountChanged()
 
@@ -59,10 +61,23 @@ final class ClickScreenshotSession {
             throw CaptureError.contentUnavailable("系统没有返回有效的显示器像素尺寸。")
         }
 
-        let ownWindows = content.windows.filter {
-            $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
+        let ownBundleIdentifier = Bundle.main.bundleIdentifier
+        let ownApplications = content.applications.filter {
+            $0.bundleIdentifier == ownBundleIdentifier
         }
-        let filter = SCContentFilter(display: display, excludingWindows: ownWindows)
+        let filter: SCContentFilter
+        if ownApplications.isEmpty {
+            let ownWindows = content.windows.filter {
+                $0.owningApplication?.bundleIdentifier == ownBundleIdentifier
+            }
+            filter = SCContentFilter(display: display, excludingWindows: ownWindows)
+        } else {
+            filter = SCContentFilter(
+                display: display,
+                excludingApplications: ownApplications,
+                exceptingWindows: []
+            )
+        }
         let outputSize = scaledDimensions(width: pixelWidth, height: pixelHeight)
         let configuration = SCStreamConfiguration()
         configuration.width = outputSize.width
@@ -76,7 +91,6 @@ final class ClickScreenshotSession {
 
         contentFilter = filter
         screenshotConfiguration = configuration
-        displayID = display.displayID
         isActive = true
         notifyQueuedCountChanged()
     }
@@ -91,17 +105,16 @@ final class ClickScreenshotSession {
     func enqueueCaptureEvent(_ event: InputTimelineEvent) {
         guard isActive,
               contentFilter != nil,
-              screenshotConfiguration != nil,
-              displayID != nil else {
+              screenshotConfiguration != nil else {
             return
         }
 
-        if event.kind.coalescesScreenshot {
+        if triggerPolicy.shouldCoalesce(event.kind) {
             scheduleCoalescedCapture(event)
             return
         }
 
-        guard event.kind.triggersScreenshot else { return }
+        guard triggerPolicy.shouldCaptureImmediately(event.kind) else { return }
         appendCapture(event, delay: postInputDelayNanoseconds)
     }
 
@@ -118,15 +131,13 @@ final class ClickScreenshotSession {
             }
             guard let self,
                   let contentFilter = self.contentFilter,
-                  let configuration = self.screenshotConfiguration,
-                  let displayID = self.displayID else {
+                  let configuration = self.screenshotConfiguration else {
                 return nil
             }
             let frame = await self.capture(
                 event: event,
                 contentFilter: contentFilter,
-                configuration: configuration,
-                displayID: displayID
+                configuration: configuration
             )
             if coalesced {
                 // Hand the finished gesture over to the ordered list so a later
@@ -184,15 +195,13 @@ final class ClickScreenshotSession {
 
         contentFilter = nil
         screenshotConfiguration = nil
-        displayID = nil
         return frames
     }
 
     private func capture(
         event: InputTimelineEvent,
         contentFilter: SCContentFilter,
-        configuration: SCStreamConfiguration,
-        displayID: CGDirectDisplayID
+        configuration: SCStreamConfiguration
     ) async -> CapturedFrame? {
         let cgImage: CGImage?
         if #available(macOS 14.0, *) {
@@ -205,10 +214,10 @@ final class ClickScreenshotSession {
                 }
             }
         } else {
-            // SCScreenshotManager was introduced in macOS 14. Keep the macOS
-            // 13 fallback functional, even though it cannot exclude our own
-            // window from the full-display image.
-            cgImage = CGDisplayCreateImage(displayID)
+            cgImage = await captureFirstStreamFrame(
+                contentFilter: contentFilter,
+                configuration: configuration
+            )
         }
 
         guard let cgImage else { return nil }
@@ -221,6 +230,30 @@ final class ClickScreenshotSession {
             timestamp: event.timestamp,
             primaryInputEvent: event
         )
+    }
+
+    private func captureFirstStreamFrame(
+        contentFilter: SCContentFilter,
+        configuration: SCStreamConfiguration
+    ) async -> CGImage? {
+        let output = FirstScreenFrameOutput()
+        let stream = SCStream(filter: contentFilter, configuration: configuration, delegate: nil)
+
+        do {
+            try stream.addStreamOutput(
+                output,
+                type: .screen,
+                sampleHandlerQueue: DispatchQueue(label: "SOPShot.single-frame-capture")
+            )
+            try await stream.startCapture()
+        } catch {
+            output.finishWithoutImage()
+            return nil
+        }
+
+        let image = await output.firstFrame()
+        try? await stream.stopCapture()
+        return image
     }
 
     private func scaledDimensions(width: Int, height: Int) -> (width: Int, height: Int) {
@@ -244,5 +277,65 @@ final class ClickScreenshotSession {
 
     private func notifyQueuedCountChanged() {
         onQueuedCountChanged?(queuedScreenshotCount)
+    }
+}
+
+private final class FirstScreenFrameOutput: NSObject, SCStreamOutput, @unchecked Sendable {
+    private let lock = NSLock()
+    private let imageContext = CIContext()
+    private var continuation: CheckedContinuation<CGImage?, Never>?
+    private var hasFinished = false
+    private var capturedImage: CGImage?
+
+    func firstFrame(timeout: TimeInterval = 2) async -> CGImage? {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if hasFinished {
+                let image = capturedImage
+                lock.unlock()
+                continuation.resume(returning: image)
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeout) { [weak self] in
+                self?.finish(nil)
+            }
+        }
+    }
+
+    func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of outputType: SCStreamOutputType
+    ) {
+        guard outputType == .screen,
+              CMSampleBufferIsValid(sampleBuffer),
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return
+        }
+
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        guard let cgImage = imageContext.createCGImage(image, from: image.extent) else { return }
+        finish(cgImage)
+    }
+
+    func finishWithoutImage() {
+        finish(nil)
+    }
+
+    private func finish(_ image: CGImage?) {
+        lock.lock()
+        guard !hasFinished else {
+            lock.unlock()
+            return
+        }
+        hasFinished = true
+        capturedImage = image
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: image)
     }
 }
