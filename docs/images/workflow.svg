@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
+  <title id="title">SOPShot 使用流程</title>
+  <desc id="desc">记录操作并截图，检查截图，发送给已配置的视觉模型，编辑后导出说明。</desc>
+  <rect width="1200" height="300" rx="22" fill="#202629"/>
+  <path d="M286 150h44M586 150h44M886 150h44" stroke="#596368" stroke-width="2"/>
+  <path d="m320 143 10 7-10 7m300-14 10 7-10 7m300-14 10 7-10 7" fill="none" stroke="#ff922e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g font-family="-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif">
+    <g transform="translate(42 46)">
+      <text x="0" y="18" fill="#ff922e" font-size="14" font-weight="700" letter-spacing="1.5">01</text>
+      <rect x="0" y="42" width="54" height="54" rx="14" fill="#273237" stroke="#475257"/>
+      <path d="M19 56 37 76l3-9 9-3-30-8Z" fill="none" stroke="#f2f2ed" stroke-width="2.5" stroke-linejoin="round"/>
+      <circle cx="39" cy="78" r="4" fill="#ff922e"/>
+      <text x="0" y="139" fill="#f2f2ed" font-size="19" font-weight="650">记录操作</text>
+      <text x="0" y="171" fill="#aab2b4" font-size="14">点击或关键按键触发截图</text>
+    </g>
+
+    <g transform="translate(342 46)">
+      <text x="0" y="18" fill="#ff922e" font-size="14" font-weight="700" letter-spacing="1.5">02</text>
+      <rect x="0" y="42" width="54" height="54" rx="14" fill="#273237" stroke="#475257"/>
+      <rect x="14" y="56" width="27" height="27" rx="3" fill="none" stroke="#f2f2ed" stroke-width="2"/>
+      <path d="m18 77 7-8 5 5 4-4 4 7H18Z" fill="#ff922e"/>
+      <text x="0" y="139" fill="#f2f2ed" font-size="19" font-weight="650">检查截图</text>
+      <text x="0" y="171" fill="#aab2b4" font-size="14">查看操作，删图或补充说明</text>
+    </g>
+
+    <g transform="translate(642 46)">
+      <text x="0" y="18" fill="#ff922e" font-size="14" font-weight="700" letter-spacing="1.5">03</text>
+      <rect x="0" y="42" width="54" height="54" rx="14" fill="#273237" stroke="#475257"/>
+      <rect x="13" y="55" width="28" height="29" rx="3" fill="none" stroke="#f2f2ed" stroke-width="2"/>
+      <path d="M19 64h16M19 70h12M19 76h9" stroke="#ff922e" stroke-width="2" stroke-linecap="round"/>
+      <text x="0" y="139" fill="#f2f2ed" font-size="19" font-weight="650">生成说明</text>
+      <text x="0" y="171" fill="#aab2b4" font-size="14">确认后发送给你配置的模型</text>
+    </g>
+
+    <g transform="translate(942 46)">
+      <text x="0" y="18" fill="#ff922e" font-size="14" font-weight="700" letter-spacing="1.5">04</text>
+      <rect x="0" y="42" width="54" height="54" rx="14" fill="#273237" stroke="#475257"/>
+      <path d="M18 56h19l7 7v20H18z" fill="none" stroke="#f2f2ed" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M37 56v8h7M23 70h16M23 76h12" fill="none" stroke="#ff922e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="0" y="139" fill="#f2f2ed" font-size="19" font-weight="650">编辑导出</text>
+      <text x="0" y="171" fill="#aab2b4" font-size="14">检查内容，导出 Markdown 或 HTML</text>
+    </g>
+  </g>
+</svg>

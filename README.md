@@ -1,138 +1,53 @@
-<p align="center">
-  <img src="docs/images/icon.png" width="96" height="96" alt="SOPShot icon">
-</p>
+# SOPShot
 
-<h1 align="center">SOPShot</h1>
+按操作截图，检查后生成图文步骤。
 
-<p align="center">
-  <strong>把一次电脑操作，整理成一页可交接说明</strong><br>
-  原生 macOS · 按操作截图 · 你自己的视觉模型 · 无自建服务器
-</p>
+[下载 macOS 版](https://github.com/wyf-yfw/SOPShot/releases) · [从源码运行](#从源码运行)
 
-<p align="center">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%2013%2B-black">
-  <img alt="Swift" src="https://img.shields.io/badge/Swift-5.9-F05138">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
-</p>
+SOPShot 不录连续视频。鼠标点击和已启用的关键按键会触发截图。操作结束后，你可以逐张检查、删除不需要的画面，再把保留的截图和操作信息交给自己配置的视觉模型生成说明。
 
----
+## 从操作到说明
 
-<p align="center">
-  <img src="docs/images/01-start.png" width="420" alt="开始截图">
-</p>
+![SOPShot 的操作采集、截图检查、模型生成和导出流程](docs/images/workflow.svg)
 
-SOPShot 不会替你托管模型，也不会录一整段视频。  
-你按平时方式点几下、按几个关键键；它在本机留下对应截图。你确认后，再一次性发给自己的多模态接口，生成标题、适用对象和分步说明。
+### 检查截图，再生成
 
-## 它解决什么
+你可以查看每张截图对应的鼠标和键盘操作，删除多余画面，并补充流程背景。只有点击“开始生成说明”后，SOPShot 才会把内容发送到所选模型。
 
-办公里常见的尴尬：口头教一遍，下周新人又来问；录屏又长又难剪；手工截图编号又烦。
+![SOPShot 截图检查界面](docs/images/03-preview.png)
 
-SOPShot 的切口很窄：
+生成结果可以继续编辑，并导出为 Markdown 或 HTML。
 
-> **屏幕上的操作过程 → 一页可复用的操作说明**
+## 截图如何触发
 
-适合报销、内部系统、客户指引、支持话术这类「照着点就能做」的交接。
+- 每次鼠标点击和已启用的关键按键，分别对应一张截图。
+- 拖拽和滚动会在操作停下后截图。
+- 普通字母和数字只记录为“键盘输入”事件，不保存具体字符，也不会触发截图。
+- 可以在设置中调整哪些操作触发截图。
 
-## 三步走完
+## 使用前准备
 
-```text
-设置模型  →  按操作截图  →  检查并生成说明
-```
+- macOS 13 或更新版本。
+- 一个支持图像输入的模型，以及对应的 API Key。SOPShot 也支持自定义 OpenAI 兼容接口。
+- 在系统设置中允许 SOPShot 使用“屏幕录制”和“输入监控”。
 
-| 步骤 | 你做什么 | SOPShot 做什么 |
-| --- | --- | --- |
-| 1 | 填入自己的 API Key，选一个视觉模型 | 只保存在本机 |
-| 2 | 正常操作一遍电脑 | 点击 / 关键键后截一张图 |
-| 3 | 删掉多余画面，可写补充说明 | 确认后才调用模型，导出 HTML / Markdown |
+## 数据会发送到哪里
 
-<p align="center">
-  <img src="docs/images/02-capture.png" width="520" alt="按操作截图进行中">
-</p>
+截图、操作事件信息和补充说明会在你点击生成后，直接发送到已配置的模型接口。SOPShot 不提供中转服务；数据如何处理取决于你选择的服务商。
 
-<p align="center"><em>截图进行中：计数的是「张」，不是录屏时长</em></p>
+API Key 保存在本机 `~/Library/Application Support/SOPShot/api-keys.json`，不使用苹果钥匙串。应用不会自动遮盖姓名、账号等画面内容，发送或导出前请先检查截图。本次采集不会自动保存为草稿，关闭并确认丢弃后无法恢复。
 
-<p align="center">
-  <img src="docs/images/03-preview.png" width="720" alt="检查截图">
-</p>
+## 从源码运行
 
-<p align="center"><em>检查截图：看画面、看操作数据、写补充说明，再点生成</em></p>
-
-## 和「录屏工具」差在哪
-
-| | 传统录屏 / 剪辑 | SOPShot |
-| --- | --- | --- |
-| 产物 | 视频或一堆散图 | 一页带图说明 |
-| 触发 | 连续录像 | 重要操作才截图 |
-| 模型 | 常要你自己剪、自己写 | 确认后一次性生成 |
-| 服务器 | 很多要账号和云端 | **无中转，直连你的接口** |
-
-普通字母和数字只记「有输入」，不记具体字符，也不触发截图。
-
-## 支持的视觉模型
-
-只保留「能看图、能回文字」的型号。预设包括：
-
-- Google Gemini
-- 阿里云百炼 · 通义千问
-- 火山方舟 · 豆包
-- OpenAI / Anthropic / DeepSeek / xAI / 智谱 GLM / Kimi / Mistral
-- 自定义 OpenAI 兼容接口
-
-型号清单按各厂商公开目录维护；以应用内「模型设置」为准。  
-纯文本模型、生图/生视频模型不会出现在列表里。
-
-## 隐私
-
-- 截图从本机直接发到你填写的接口，SOPShot 不做中转
-- API Key 保存在 `~/Library/Application Support/SOPShot/api-keys.json`（目录 `0700`，文件 `0600`）
-- 不记录具体键入内容、剪贴板、密码
-- 不写临时 MP4，不收音
-- 导出前请自行检查画面里的姓名、手机号、账号等
-
-首次使用需要：**屏幕录制** + **输入监控** 权限。
-
-## 运行
+需要 macOS 13 或更新版本，以及 Swift 5.9+（Xcode 或 Command Line Tools）。
 
 ```sh
-./scripts/build-dev.sh
+git clone https://github.com/wyf-yfw/SOPShot.git
+cd SOPShot
+./scripts/build-app.sh
 open SOPShot.app
 ```
 
-需要：
-
-- macOS 13+
-- Swift 5.9+（Command Line Tools 或 Xcode）
-- 本机开发签名证书 `SOPShot Development`（脚本会用固定身份签名，避免每次构建都丢权限）
-
-也可用 Xcode / SwiftPM 直接构建 `Package.swift`。
-
-快捷键：`⌘⇧R` 开始 / 结束截图（在检查页则是开始生成）。
-
-## 版本与发布
-
-- 当前版本见仓库根目录 [`VERSION`](VERSION)（现为 **1.0**）
-- `main` 受保护：不能直接推送，只能从 `release` / `release/*` 发 PR 合入
-- 合入 `main` 后，CI 会：
-  1. 用当前 `VERSION` 构建 macOS `.app` 并打成 DMG
-  2. 发布到 [GitHub Releases](https://github.com/wyf-yfw/SOPShot/releases)（标签 `v主.次`）
-  3. 在 `release` 分支把版本号 +1（例如 `1.0` → `1.1`），供下一轮合入
-
-本地正式包（无开发证书、ad-hoc 签名）：
-
-```bash
-./scripts/build-app.sh
-./scripts/package-dmg.sh
-```
-
-## 当前边界
-
-- 默认只采主显示器
-- 本地不做 OCR，也不按画面相似度自动去重
-- 草稿只在当前窗口，关掉就没了
-- 还没有自动遮盖隐私字段
-- 仍是可运行原型，不是完整商业产品
-
-## 开源协议
+## 许可
 
 [MIT](LICENSE)
